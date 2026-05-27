@@ -128,6 +128,24 @@
     background: radial-gradient(ellipse at center, transparent 38%, rgba(255,255,255,0.08) 70%, rgba(255,255,255,0.22) 100%); }
   #controlsHint { position:absolute; right:24px; bottom:215px; font-size:11px; color:#6a7a96; text-align:right; line-height:1.6; }
 
+  /* ---------- coins + race HUD ---------- */
+  #coinHud { position:absolute; top:52px; left:18px; font-size:15px; font-weight:800; color:#ffd23f;
+    background:#0a0e17aa; padding:5px 12px; border-radius:8px; border:1px solid #2a3a5a; }
+  #racePanel { position:absolute; top:84px; left:50%; transform:translateX(-50%); display:flex; gap:14px;
+    background:#0a0e17cc; padding:8px 18px; border-radius:10px; border:1px solid #ff7b00; align-items:center; }
+  #raceLap { font-weight:800; font-size:18px; color:#ffd23f; }
+  #racePos { font-weight:800; font-size:18px; color:#00e0ff; }
+  #raceClock { font-family:monospace; font-size:16px; color:#cdd9ec; }
+  #raceCountdown { position:absolute; top:38%; left:50%; transform:translate(-50%,-50%); font-size:110px;
+    font-weight:800; color:#fff; text-shadow:0 4px 24px #000; display:none; }
+  #resultsList .res-row { display:flex; gap:10px; padding:7px 10px; background:#0e1422; border-radius:8px; margin-bottom:6px; }
+  #resultsList .res-place { font-weight:800; width:34px; color:#ffd23f; }
+  #adminList .player-row { justify-content:flex-start; flex-wrap:wrap; }
+  .admin-btn { font-size:11px; padding:4px 8px; border:none; border-radius:6px; background:#2a3a5a; color:#fff; cursor:pointer; }
+  .admin-btn:hover { filter:brightness(1.2); }
+  .admin-btn.danger { background:#b91c1c; }
+  .admin-btn.on { background:#16a34a; }
+
   /* ---------- Pause ---------- */
   #pause { background:#0a0e17dd; z-index:30; }
   .speedo-bg { fill:#0a0e17cc; stroke:#2a3a5a; stroke-width:2; }
@@ -152,6 +170,7 @@
       <button class="btn btn-secondary" id="btnShowJoin">JOIN WITH CODE</button>
       <button class="btn btn-secondary" id="btnShowPublic">JOIN PUBLIC SERVER</button>
       <button class="btn btn-ghost" id="btnOffline" style="margin-top:18px;border-color:#ff7b00;color:#ffb347;">🏁 PLAY OFFLINE (Solo)</button>
+      <button class="btn btn-ghost" id="btnShop" style="margin-top:8px;">🔧 UPGRADES & SHOP <span style="color:#ffd23f;">(🪙 <span id="menuCoins">0</span>)</span></button>
     </div>
 
     <div id="menuJoin" class="hidden">
@@ -207,11 +226,13 @@
         <div class="color-grid" id="colorGrid"></div>
 
         <div class="section-title" style="margin-top:18px;">Lobby Settings <span id="hostNote" style="font-size:10px;color:#6a7a96;">(host only)</span></div>
+        <div class="setting-row"><label>Game Mode</label><select id="setMode"><option value="open" selected>Open World</option><option value="race">Race (3 laps)</option></select></div>
         <div class="setting-row"><label>Max Players</label><select id="setMaxPlayers"></select></div>
         <div class="setting-row"><label>World Size</label><select id="setWorldSize"><option value="small">Small</option><option value="medium" selected>Medium</option><option value="large">Large</option></select></div>
         <div class="setting-row"><label>Traffic</label><select id="setTraffic"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
         <div class="setting-row"><label>Time of Day</label><select id="setTime"><option value="day" selected>Day</option><option value="dusk">Dusk</option><option value="night">Night</option></select></div>
         <div class="setting-row"><label>Weather</label><select id="setWeather"><option value="clear" selected>Clear</option><option value="rain">Rain</option><option value="fog">Fog</option></select></div>
+        <div class="setting-row"><label>Enable Cheats</label><label style="margin:0;display:flex;align-items:center;gap:6px;flex:1;"><input type="checkbox" id="setCheats" style="width:18px;height:18px;"/> <span style="font-size:11px;color:#8aa0c0;">unlocks admin panel for host</span></label></div>
       </div>
     </div>
 
@@ -256,10 +277,18 @@
   <div id="nameTags"></div>
   <div id="boostMsg">NITRO BOOST!</div>
   <div id="flipMsg"></div>
+  <div id="coinHud">🪙 0</div>
+  <div id="racePanel" class="hidden">
+    <div id="raceLap">LAP 1/3</div>
+    <div id="racePos">P1</div>
+    <div id="raceClock">0.0s</div>
+  </div>
+  <div id="raceCountdown"></div>
   <div id="controlsHint">
     WASD / Arrows — Drive &nbsp; SPACE — Handbrake<br/>
+    In air: A/D roll · W/S pitch (line up your landing)<br/>
     SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; ENTER — Chat<br/>
-    Right-drag — Look &nbsp; Wheel — Zoom &nbsp; ESC — Menu
+    Right-drag — Look &nbsp; Wheel — Zoom &nbsp; ESC — Pause/Garage
   </div>
 </div>
 <div id="speedLines"></div>
@@ -269,8 +298,55 @@
   <div class="panel" style="width:320px;text-align:center;">
     <div class="title" style="font-size:28px;">PAUSED</div>
     <button class="btn btn-primary" id="btnResume">RESUME</button>
+    <button class="btn btn-secondary" id="btnGarage">CHANGE CAR (Garage)</button>
+    <button class="btn btn-secondary" id="btnShopPause">🔧 UPGRADES & SHOP</button>
+    <button class="btn btn-secondary hidden" id="btnAdmin" style="background:#7c2d12;">⚡ ADMIN PANEL</button>
     <button class="btn btn-secondary" id="btnToLobby">BACK TO LOBBY</button>
     <button class="btn btn-ghost" id="btnQuit">QUIT TO MENU</button>
+  </div>
+</div>
+
+<!-- =================== GARAGE (change car mid-game) =================== -->
+<div id="garage" class="overlay hidden">
+  <div class="panel" style="width:540px;max-width:96vw;">
+    <div class="title" style="font-size:24px;">GARAGE</div>
+    <div class="subtitle">Swap your ride — changes apply instantly</div>
+    <div class="car-grid" id="garageCarGrid"></div>
+    <label>Chassis Color</label>
+    <div class="color-grid" id="garageColorGrid"></div>
+    <button class="btn btn-primary" id="btnGarageDone" style="margin-top:16px;">DONE</button>
+  </div>
+</div>
+
+<!-- =================== SHOP / UPGRADES =================== -->
+<div id="shop" class="overlay hidden">
+  <div class="panel" style="width:480px;max-width:96vw;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div class="title" style="font-size:26px;">UPGRADES</div>
+      <div style="font-weight:800;color:#ffd23f;font-size:18px;">🪙 <span id="shopCoins">0</span></div>
+    </div>
+    <div class="subtitle">Upgrades apply to every car you drive · earn coins by driving, ramming & racing</div>
+    <div id="shopList"></div>
+    <button class="btn btn-ghost" id="btnShopClose" style="margin-top:14px;">Close</button>
+  </div>
+</div>
+
+<!-- =================== RACE RESULTS =================== -->
+<div id="raceResults" class="overlay hidden" style="z-index:32;">
+  <div class="panel" style="width:420px;max-width:94vw;text-align:center;">
+    <div class="title" style="font-size:30px;">🏁 RACE RESULTS</div>
+    <div id="resultsList" style="margin:14px 0;text-align:left;"></div>
+    <button class="btn btn-primary" id="btnRaceLobby">BACK TO LOBBY</button>
+  </div>
+</div>
+
+<!-- =================== ADMIN PANEL (cheats) =================== -->
+<div id="adminPanel" class="overlay hidden" style="z-index:33;">
+  <div class="panel" style="width:480px;max-width:96vw;max-height:90vh;overflow-y:auto;">
+    <div class="title" style="font-size:24px;">⚡ ADMIN PANEL</div>
+    <div class="subtitle">Host powers · cheats enabled</div>
+    <div id="adminList"></div>
+    <button class="btn btn-ghost" id="btnAdminClose" style="margin-top:12px;">Close</button>
   </div>
 </div>
 
@@ -317,9 +393,44 @@ const CAR_TYPES = {
              desc:'Top speed king' },
   sedan:   { name:'Classic Sedan',topSpeed:62, accel:28, handling:2.4, brake:38, mass:1.2, color:0x9b59b6,
              desc:'Balanced · Everyday' },
+  plane:   { name:'✈ Airplane',   topSpeed:120,accel:30, handling:2.0, brake:30, mass:1.0, color:0xe8eef7,
+             fly:true, desc:'Take off & fly the map' },
 };
-const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan'];
+const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane'];
 const COLOR_OPTIONS = [0xff3344,0xff8c1a,0xf1c40f,0x2ecc71,0x1abc9c,0x3498db,0x9b59b6,0xe84393,0xecf0f1,0x2c3e50];
+
+/* =====================================================================
+   PLAYER ACCOUNT — coins + upgrades, saved in localStorage
+   ===================================================================== */
+const UPGRADE_DEFS = {
+  topSpeed: { name:'Top Speed',     max:5, cost:[100,200,400,700,1200] },
+  accel:    { name:'Acceleration',  max:5, cost:[100,200,400,700,1200] },
+  handling: { name:'Handling',      max:5, cost:[80,160,300,550,900] },
+  brake:    { name:'Brakes',        max:5, cost:[80,160,300,550,900] },
+  nitro:    { name:'Nitro',         max:5, cost:[120,240,450,800,1400] },
+};
+function loadAccount() {
+  try {
+    const a = JSON.parse(localStorage.getItem('turbocity_account') || '{}');
+    return { coins: a.coins || 0, upgrades: Object.assign({ topSpeed:0, accel:0, handling:0, brake:0, nitro:0 }, a.upgrades || {}) };
+  } catch (e) { return { coins:0, upgrades:{ topSpeed:0, accel:0, handling:0, brake:0, nitro:0 } }; }
+}
+const account = loadAccount();
+function saveAccount() { try { localStorage.setItem('turbocity_account', JSON.stringify(account)); } catch (e) {} }
+function addCoins(n) { account.coins += n; }
+// car stats with upgrades applied (used by physics + HUD)
+function effectiveStats() {
+  const b = CAR_TYPES[player.carType] || CAR_TYPES.sports;
+  const u = account.upgrades;
+  return {
+    ...b,
+    topSpeed: b.topSpeed * (1 + 0.08 * u.topSpeed),
+    accel:    b.accel    * (1 + 0.08 * u.accel),
+    handling: b.handling * (1 + 0.06 * u.handling),
+    brake:    b.brake    * (1 + 0.08 * u.brake),
+    nitroMul: 1 + 0.12 * u.nitro,
+  };
+}
 
 /* =====================================================================
    CAR MESH BUILDER — primitives only (boxes + cylinders)
@@ -327,6 +438,7 @@ const COLOR_OPTIONS = [0xff3344,0xff8c1a,0xf1c40f,0x2ecc71,0x1abc9c,0x3498db,0x9
    .headlights[], .damageMat, plus a headlight SpotLight.
    ===================================================================== */
 function buildCarMesh(type, colorHex) {
+  if (type === 'plane') return buildPlaneMesh(colorHex);
   const def = CAR_TYPES[type] || CAR_TYPES.sports;
   const group = new THREE.Group();
 
@@ -419,6 +531,59 @@ function buildCarMesh(type, colorHex) {
   group.userData.headlight = spot;
 
   group.userData.proportions = P;
+  return group;
+}
+
+/* Airplane mesh — fuselage + wings + tail + propeller + landing gear.
+   Exposes the same userData shape as cars so shared code works. */
+function buildPlaneMesh(colorHex) {
+  const group = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color: colorHex, metalness:0.5, roughness:0.4 });
+  group.userData.damageMat = paint;
+
+  // fuselage (cylinder lying along Z)
+  const fus = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.5, 6, 12), paint);
+  fus.rotation.x = Math.PI/2; fus.position.y = 1.2; fus.castShadow = true;
+  group.add(fus);
+  // nose cone
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.7, 1.2, 12), paint);
+  nose.rotation.x = -Math.PI/2; nose.position.set(0, 1.2, -3.4); group.add(nose);
+  // cockpit
+  const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8),
+    new THREE.MeshStandardMaterial({ color:0x88ccff, metalness:0.2, roughness:0.05, transparent:true, opacity:0.6 }));
+  cockpit.position.set(0, 1.7, -1); cockpit.scale.set(1,0.8,1.4); group.add(cockpit);
+  // main wings (wide thin box)
+  const wingMat = new THREE.MeshStandardMaterial({ color: colorHex, metalness:0.4, roughness:0.5 });
+  const wings = new THREE.Mesh(new THREE.BoxGeometry(11, 0.2, 1.6), wingMat);
+  wings.position.set(0, 1.2, 0); wings.castShadow = true; group.add(wings);
+  // tail fin (vertical) + horizontal stabiliser
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.4, 1.2), wingMat);
+  fin.position.set(0, 2, 2.6); group.add(fin);
+  const stab = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.18, 1), wingMat);
+  stab.position.set(0, 1.4, 2.8); group.add(stab);
+  // propeller (spins via wheels hook)
+  const propHub = new THREE.Group(); propHub.position.set(0, 1.2, -4);
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.25, 3.2, 0.1),
+    new THREE.MeshStandardMaterial({ color:0x222222 }));
+  propHub.add(blade); group.add(propHub);
+  // landing gear (so it can taxi/land)
+  const gearMat = new THREE.MeshStandardMaterial({ color:0x111111, roughness:0.8 });
+  const wheels = [];
+  for (const [x, z] of [[-1.6, -1], [1.6, -1], [0, 2.5]]) {
+    const w = new THREE.Group();
+    const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.35,0.35,0.25,12), gearMat);
+    tire.rotation.z = Math.PI/2; w.add(tire);
+    w.position.set(x, 0.35, z); group.add(w); wheels.push(w);
+  }
+  group.userData.wheels = wheels;
+  group.userData.propeller = propHub;
+  group.userData.brakeLights = [];
+  group.userData.headlightMeshes = [];
+  const spot = new THREE.SpotLight(0xfff4d6, 0, 80, Math.PI/6, 0.4, 1.5);
+  spot.position.set(0, 1.2, -4);
+  const tgt = new THREE.Object3D(); tgt.position.set(0,0,-30); group.add(tgt); spot.target = tgt;
+  group.add(spot); group.userData.headlight = spot;
+  group.userData.isPlane = true;
   return group;
 }
 
@@ -557,38 +722,55 @@ function buildSky() {
    ===================================================================== */
 function line(i){ return -WORLD.half + i * WORLD.spacing; }
 
-function buildWorld() {
+// Seeded RNG (mulberry32) so every client builds the SAME random map.
+function makeRng(seed){
+  let a = (seed >>> 0) || 1;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let worldGroup = null;     // holds all map meshes so we can rebuild per-seed
+let mapRng = Math.random;  // active seeded rng during map build
+
+function buildWorld(seed) {
+  // tear down previous map
+  if (worldGroup) { scene.remove(worldGroup); }
+  worldGroup = new THREE.Group(); scene.add(worldGroup);
+  buildingBoxes.length = 0; boostPads.length = 0; ramps.length = 0;
+  mapRng = makeRng(((seed == null ? 1 : seed) | 0) >>> 0);
+  const R = mapRng;
+
   const B = WORLD.blocks, SP = WORLD.spacing, H = WORLD.half;
 
   // ground / grass
   const groundMat = new THREE.MeshStandardMaterial({ color:0x4f8f3f, roughness:1 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(H*2+200, H*2+200), groundMat);
   ground.rotation.x = -Math.PI/2; ground.position.y = -0.02; ground.receiveShadow = true;
-  scene.add(ground);
+  worldGroup.add(ground);
 
-  // roads (grid lines), as long boxes
+  // roads (grid lines) — kept deterministic so NPC waypoints always line up
   const roadMat = new THREE.MeshStandardMaterial({ color:0x33363d, roughness:0.9 });
   const lineMat = new THREE.MeshStandardMaterial({ color:0xddddaa, roughness:0.8, emissive:0x222200, emissiveIntensity:0.2 });
   const roadW = 12;
   const span = B * SP + roadW;
   for (let i=0; i<=B; i++) {
     const c = line(i);
-    // vertical road (runs along Z)
     const rv = new THREE.Mesh(new THREE.BoxGeometry(roadW, 0.2, span), roadMat);
-    rv.position.set(c, 0.02, 0); rv.receiveShadow = true; scene.add(rv);
-    // horizontal road (runs along X)
+    rv.position.set(c, 0.02, 0); rv.receiveShadow = true; worldGroup.add(rv);
     const rh = new THREE.Mesh(new THREE.BoxGeometry(span, 0.2, roadW), roadMat);
-    rh.position.set(0, 0.02, c); rh.receiveShadow = true; scene.add(rh);
-    // center dashed lines
+    rh.position.set(0, 0.02, c); rh.receiveShadow = true; worldGroup.add(rh);
     for (let d=-span/2; d<span/2; d+=10) {
       const dv = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.21,4), lineMat);
-      dv.position.set(c, 0.04, d+2); scene.add(dv);
+      dv.position.set(c, 0.04, d+2); worldGroup.add(dv);
       const dh = new THREE.Mesh(new THREE.BoxGeometry(4,0.21,0.4), lineMat);
-      dh.position.set(d+2, 0.04, c); scene.add(dh);
+      dh.position.set(d+2, 0.04, c); worldGroup.add(dh);
     }
   }
 
-  // sidewalks + buildings + trees in each block
+  // sidewalks + buildings + trees in each block (randomized by seed)
   const sideMat = new THREE.MeshStandardMaterial({ color:0x9aa0a8, roughness:1 });
   for (let i=0; i<B; i++) {
     for (let j=0; j<B; j++) {
@@ -596,50 +778,41 @@ function buildWorld() {
       const cz = (line(j)+line(j+1))/2;
       const blockSize = SP - roadW;
 
-      // sidewalk slab
       const sw = new THREE.Mesh(new THREE.BoxGeometry(blockSize, 0.3, blockSize), sideMat);
-      sw.position.set(cx, 0.06, cz); sw.receiveShadow = true; scene.add(sw);
+      sw.position.set(cx, 0.06, cz); sw.receiveShadow = true; worldGroup.add(sw);
 
-      // leave some blocks as parks (trees), rest buildings
-      const isPark = (i+j) % 5 === 0;
+      const isPark = R() < 0.22;   // ~1 in 5 blocks is a park
       if (isPark) {
-        for (let t=0; t<6; t++) {
-          const tx = cx + (Math.random()-0.5)*blockSize*0.8;
-          const tz = cz + (Math.random()-0.5)*blockSize*0.8;
-          addTree(tx, tz);
+        const nT = 4 + Math.floor(R()*5);
+        for (let t=0; t<nT; t++) {
+          addTree(cx + (R()-0.5)*blockSize*0.8, cz + (R()-0.5)*blockSize*0.8);
         }
       } else {
-        // 1-4 buildings per block
-        const n = 1 + Math.floor(Math.random()*3);
+        const n = 1 + Math.floor(R()*3);
         for (let k=0; k<n; k++) {
-          const bw = 8 + Math.random()*14;
-          const bd = 8 + Math.random()*14;
-          const bh = 10 + Math.random()*46;
-          const bx = cx + (Math.random()-0.5)*(blockSize-bw-4);
-          const bz = cz + (Math.random()-0.5)*(blockSize-bd-4);
+          const bw = 8 + R()*14, bd = 8 + R()*14, bh = 10 + R()*46;
+          const bx = cx + (R()-0.5)*(blockSize-bw-4);
+          const bz = cz + (R()-0.5)*(blockSize-bd-4);
           addBuilding(bx, bz, bw, bd, bh);
         }
-        // a couple trees on the edge too
-        addTree(cx + blockSize*0.4*(Math.random()-0.5), cz + blockSize*0.45);
+        addTree(cx + blockSize*0.4*(R()-0.5), cz + blockSize*0.45);
       }
     }
   }
 
   buildHighwayLoop();
   buildTunnel();
-  buildBoostPads();
-  buildRamps();
+  buildBoostPads(R);
+  buildRamps(R);
   buildSkidLayer();
 }
 
 function addBuilding(x, z, w, d, h) {
-  const hue = 0.55 + Math.random()*0.1;
-  const col = new THREE.Color().setHSL(0.6, 0.1, 0.35 + Math.random()*0.3);
+  const col = new THREE.Color().setHSL(0.6, 0.1, 0.35 + mapRng()*0.3);
   const mat = new THREE.MeshStandardMaterial({ color: col, roughness:0.8, metalness:0.1 });
   const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   b.position.set(x, h/2, z); b.castShadow = true; b.receiveShadow = true;
-  scene.add(b);
-  // lit windows (emissive small boxes), helps at night
+  worldGroup.add(b);
   const winMat = new THREE.MeshStandardMaterial({ color:0x335577, emissive:0xffdd88, emissiveIntensity:0.0 });
   b.userData.winMat = winMat;
   const rows = Math.floor(h/4), cols = Math.floor(w/3);
@@ -650,8 +823,7 @@ function addBuilding(x, z, w, d, h) {
     dummy.updateMatrix(); grid.setMatrixAt(idx++, dummy.matrix);
   }
   b.add(grid);
-  // store AABB for collision (slightly padded)
-  buildingBoxes.push({ minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2 });
+  buildingBoxes.push({ minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2, top:h });
 }
 
 function addTree(x, z) {
@@ -663,8 +835,8 @@ function addTree(x, z) {
     new THREE.MeshStandardMaterial({ color:0x2f7d32, roughness:1 }));
   foliage.position.y = 4; foliage.castShadow = true;
   g.add(trunk); g.add(foliage); g.position.set(x,0,z);
-  scene.add(g);
-  buildingBoxes.push({ minX:x-0.6, maxX:x+0.6, minZ:z-0.6, maxZ:z+0.6 });
+  worldGroup.add(g);
+  buildingBoxes.push({ minX:x-0.6, maxX:x+0.6, minZ:z-0.6, maxZ:z+0.6, top:4 });
 }
 
 /* elevated highway ring just outside the city + support pillars (bridge) */
@@ -678,21 +850,19 @@ function buildHighwayLoop() {
   const pillarMat = new THREE.MeshStandardMaterial({ color:0x777, roughness:1 });
   for (const sgmt of segs) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(sgmt.sx, 1, sgmt.sz), roadMat);
-    m.position.set(sgmt.x, y, sgmt.z); m.castShadow=true; m.receiveShadow=true; scene.add(m);
-    // pillars
+    m.position.set(sgmt.x, y, sgmt.z); m.castShadow=true; m.receiveShadow=true; worldGroup.add(m);
     const count = Math.floor(Math.max(sgmt.sx,sgmt.sz)/30);
     for (let p=0;p<count;p++){
       const t = (p/(count-1||1))-0.5;
       const px = sgmt.x + (sgmt.sx>sgmt.sz ? t*sgmt.sx*0.9 : 0);
       const pz = sgmt.z + (sgmt.sz>sgmt.sx ? t*sgmt.sz*0.9 : 0);
       const pil = new THREE.Mesh(new THREE.CylinderGeometry(1.2,1.4,y,10), pillarMat);
-      pil.position.set(px, y/2, pz); pil.castShadow=true; scene.add(pil);
+      pil.position.set(px, y/2, pz); pil.castShadow=true; worldGroup.add(pil);
     }
   }
-  // entrance ramp from ground to highway near a corner
   const ramp = new THREE.Mesh(new THREE.BoxGeometry(w, 1, 50), roadMat);
   ramp.position.set(-H+20, y/2, -H+30); ramp.rotation.x = -Math.atan2(y,50);
-  scene.add(ramp);
+  worldGroup.add(ramp);
 }
 
 /* a simple tunnel: two long walls + roof spanning one road */
@@ -702,40 +872,45 @@ function buildTunnel() {
   const x = line(3);
   for (const sx of [-7, 7]) {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(1, 8, len), mat);
-    wall.position.set(x+sx, 4, z0); wall.castShadow=true; wall.receiveShadow=true; scene.add(wall);
+    wall.position.set(x+sx, 4, z0); wall.castShadow=true; wall.receiveShadow=true; worldGroup.add(wall);
   }
   const roof = new THREE.Mesh(new THREE.BoxGeometry(16, 1, len), mat);
-  roof.position.set(x, 8, z0); roof.castShadow=true; scene.add(roof);
+  roof.position.set(x, 8, z0); roof.castShadow=true; worldGroup.add(roof);
 }
 
-/* glowing boost pads on roads */
-function buildBoostPads() {
-  const positions = [
-    [line(1), line(3)], [line(4), line(2)], [line(2), line(4)], [line(5), line(5)], [line(3), line(1)],
-  ];
+/* glowing boost pads on roads (positions vary by seed) */
+function buildBoostPads(R) {
+  R = R || Math.random;
+  const positions = [];
+  for (let k=0; k<5; k++) {
+    positions.push([ line(1 + Math.floor(R()*(WORLD.blocks-1))), line(1 + Math.floor(R()*(WORLD.blocks-1))) ]);
+  }
   for (const [x,z] of positions) {
     const mat = new THREE.MeshStandardMaterial({ color:0xffe000, emissive:0xffaa00, emissiveIntensity:1.2, transparent:true, opacity:0.9 });
     const pad = new THREE.Mesh(new THREE.BoxGeometry(6, 0.1, 8), mat);
     pad.position.set(x, 0.12, z);
-    scene.add(pad);
-    // chevron lines
+    worldGroup.add(pad);
     for (let c=0;c<3;c++){
       const ch = new THREE.Mesh(new THREE.BoxGeometry(4,0.12,0.6), new THREE.MeshStandardMaterial({color:0xffffff, emissive:0xffffff, emissiveIntensity:0.8}));
-      ch.position.set(x, 0.14, z - 2.5 + c*2.5); scene.add(ch);
+      ch.position.set(x, 0.14, z - 2.5 + c*2.5); worldGroup.add(ch);
     }
     boostPads.push({ pos:new THREE.Vector3(x,0,z), mesh:pad, cooldown:0 });
   }
 }
 
-/* stunt ramps */
-function buildRamps() {
+/* stunt ramps (positions vary by seed) */
+function buildRamps(R) {
+  R = R || Math.random;
   const mat = new THREE.MeshStandardMaterial({ color:0x884400, roughness:0.9 });
-  const spots = [ [line(2)+20, line(2), 0], [line(4), line(4)+20, Math.PI/2] ];
-  for (const [x,z,rot] of spots) {
+  const nR = 2 + Math.floor(R()*2);
+  for (let k=0; k<nR; k++) {
+    const gx = 1 + Math.floor(R()*(WORLD.blocks-1));
+    const gz = 1 + Math.floor(R()*(WORLD.blocks-1));
+    const x = line(gx) + (R()-0.5)*20, z = line(gz) + (R()-0.5)*20;
+    const rot = R()<0.5 ? 0 : Math.PI/2;
     const ramp = new THREE.Mesh(new THREE.BoxGeometry(10, 3, 14), mat);
-    ramp.rotation.y = rot;
-    ramp.rotation.x = 0.35;
-    ramp.position.set(x, 0.6, z); ramp.castShadow=true; scene.add(ramp);
+    ramp.rotation.y = rot; ramp.rotation.x = 0.35;
+    ramp.position.set(x, 0.6, z); ramp.castShadow=true; worldGroup.add(ramp);
     ramps.push({ x, z, rot, halfX:5, halfZ:7 });
   }
 }
@@ -744,7 +919,10 @@ function buildRamps() {
    PARTICLES: skid marks (persistent lines), smoke + exhaust pools
    ===================================================================== */
 let skidGroup;
-function buildSkidLayer() { skidGroup = new THREE.Group(); scene.add(skidGroup); }
+function buildSkidLayer() {
+  if (skidGroup) scene.remove(skidGroup);
+  skidGroup = new THREE.Group(); scene.add(skidGroup); skidCount = 0;
+}
 let skidCount = 0;
 function addSkidMark(x, z, heading) {
   if (skidCount > 600) { // recycle oldest
@@ -936,15 +1114,17 @@ function playHorn() {
    CAR PHYSICS (client-side)
    ===================================================================== */
 function updatePhysics(dt) {
-  const def = CAR_TYPES[player.carType];
+  const def = effectiveStats();
+  if (def.fly) { updatePlanePhysics(dt, def); return; }
   const fwd = new THREE.Vector2(Math.sin(player.heading), Math.cos(player.heading));
 
   // signed forward speed
   let speed = player.vel.dot(fwd);
 
-  // controls are locked while flipped/tumbling on its roof
+  // controls are locked while flipped, paused, in garage, trapped, or pre-race
   if (player.invuln > 0) player.invuln -= dt;
-  const locked = player.flipped;
+  const locked = player.flipped || paused || garageOpen || player.trapped || racePreStart();
+  if (player.trapped) { player.vel.set(0,0); player.speed = 0; player._vy = 0; }
   const thr = locked ? 0 : input.throttle;
   const brk = locked ? 0 : input.brake;
 
@@ -1016,11 +1196,30 @@ function updatePhysics(dt) {
     player._vy = Math.max(player._vy, Math.abs(player.speed) * 0.34);
     if (Math.abs(player.speed) > 45 && Math.abs(player.pitchVel) < 0.5) player.pitchVel = -2.0;
   }
+  // building roofs are solid surfaces you can land on & drive across
+  for (const box of buildingBoxes) {
+    if (box.top > 6 &&
+        player.pos.x > box.minX && player.pos.x < box.maxX &&
+        player.pos.z > box.minZ && player.pos.z < box.maxZ &&
+        player.pos.y > box.top - 1.5) {
+      groundY = Math.max(groundY, box.top);
+    }
+  }
   player.pos.y += player._vy * dt;
   const airborne = player.pos.y > groundY + 0.06;
   player.airborne = airborne;
   if (airborne) {
     player._vy -= 26 * dt;                       // gravity
+    // --- air control: roll/pitch/yaw mid-flight to line up a clean landing ---
+    if (!locked) {
+      const aSteer = (input.left?1:0) - (input.right?1:0);
+      const aPitch = (input.brake?1:0) - (input.throttle?1:0); // S = nose up, W = nose down
+      player.rollVel  += aSteer * 5 * dt;
+      player.pitchVel += aPitch * 4 * dt;
+      player.heading  += aSteer * 1.0 * dt;
+      player.rollVel  = Math.max(-6, Math.min(6, player.rollVel));
+      player.pitchVel = Math.max(-6, Math.min(6, player.pitchVel));
+    }
     player.tumbleRoll  += player.rollVel  * dt;  // integrate spin in the air
     player.tumblePitch += player.pitchVel * dt;
     player.rollVel  *= (1 - dt*0.15);
@@ -1049,10 +1248,11 @@ function updatePhysics(dt) {
   const targetPitch = -force * 0.002;
   player.pitch += (targetPitch - player.pitch) * Math.min(1, dt*5);
 
-  // ---- collisions with buildings (AABB) ----
+  // ---- collisions with buildings (AABB walls; roofs handled above) ----
   for (const box of buildingBoxes) {
     if (player.pos.x > box.minX-1.2 && player.pos.x < box.maxX+1.2 &&
         player.pos.z > box.minZ-1.2 && player.pos.z < box.maxZ+1.2) {
+      if (player.pos.y >= (box.top||0) - 0.5) continue; // on/above the roof = floor, not wall
       // push out along smallest penetration
       const dxL = player.pos.x - (box.minX-1.2);
       const dxR = (box.maxX+1.2) - player.pos.x;
@@ -1076,16 +1276,20 @@ function updatePhysics(dt) {
   player.pos.x = Math.max(-lim, Math.min(lim, player.pos.x));
   player.pos.z = Math.max(-lim, Math.min(lim, player.pos.z));
 
-  // ---- nitro resource ----
+  // ---- nitro resource (Nitro upgrade = slower drain, faster regen) ----
+  const nmul = def.nitroMul || 1;
   if (player.boostTimer > 0) player.boostTimer -= dt;
   if (input.nitro && player.nitro > 0 && player.boostTimer<=0) {
-    player.nitro = Math.max(0, player.nitro - dt*0.4);
+    player.nitro = Math.max(0, player.nitro - dt*0.4/nmul);
     player.nitroCooldown = 1.5;
   } else if (player.nitroCooldown > 0) {
     player.nitroCooldown -= dt;
   } else {
-    player.nitro = Math.min(1, player.nitro + dt*0.18);
+    player.nitro = Math.min(1, player.nitro + dt*0.18*nmul);
   }
+
+  // ---- earn coins from driving ----
+  addCoins(Math.abs(player.speed) * dt * 0.02);
 
   // ---- boost pads ----
   for (const pad of boostPads) {
@@ -1114,6 +1318,70 @@ function updatePhysics(dt) {
   // mesh transform handled in render
 }
 
+/* =====================================================================
+   AIRPLANE FLIGHT MODEL — W/S throttle, A/D bank-turn, SPACE climb.
+   Build up speed on the ground, then climb to take off.
+   ===================================================================== */
+function updatePlanePhysics(dt, def) {
+  if (player.planeThrottle === undefined) player.planeThrottle = 0;
+  const locked = paused || garageOpen || player.trapped || racePreStart();
+
+  // throttle
+  if (!locked && input.throttle) player.planeThrottle = Math.min(1, player.planeThrottle + dt*0.5);
+  if (!locked && input.brake)    player.planeThrottle = Math.max(0, player.planeThrottle - dt*0.7);
+  const nitro = !locked && input.nitro && player.nitro > 0;
+  const maxS = def.topSpeed * (nitro ? 1.3 : 1);
+  const targetSpeed = maxS * player.planeThrottle;
+  player.speed += (targetSpeed - player.speed) * Math.min(1, dt*0.8);
+
+  // banking turn
+  const bank = locked ? 0 : ((input.left?1:0) - (input.right?1:0));
+  const turnRate = 0.9 * Math.min(1, Math.abs(player.speed)/15);
+  player.heading += bank * turnRate * dt;
+  player.bodyRoll += (-bank*0.5 - player.bodyRoll) * Math.min(1, dt*4);
+
+  // climb / glide — needs airspeed for lift
+  const canFly = player.speed > maxS*0.18;
+  const climb = locked ? 0 : (input.handbrake ? 1 : 0); // SPACE = climb
+  let vy;
+  if (canFly) vy = climb ? 12 * Math.min(1, player.speed/maxS) : -4;
+  else vy = player.pos.y > 0 ? -10 : 0; // sink if stalling, sit on runway
+  player.pitch += ((canFly ? (climb ? -0.28 : 0.04) : 0) - player.pitch) * Math.min(1, dt*3);
+
+  // ground / building-roof support
+  let groundY = 0;
+  for (const box of buildingBoxes) {
+    if (box.top > 6 && player.pos.x>box.minX && player.pos.x<box.maxX &&
+        player.pos.z>box.minZ && player.pos.z<box.maxZ && player.pos.y>box.top-1.5) {
+      groundY = Math.max(groundY, box.top);
+    }
+  }
+  player.pos.y += vy * dt;
+  if (player.pos.y < groundY) player.pos.y = groundY;
+  player.pos.y = Math.min(player.pos.y, 220);
+
+  // move + bounds
+  player.pos.x += Math.sin(player.heading) * player.speed * dt;
+  player.pos.z += Math.cos(player.heading) * player.speed * dt;
+  const lim = WORLD.half + 30;
+  player.pos.x = Math.max(-lim, Math.min(lim, player.pos.x));
+  player.pos.z = Math.max(-lim, Math.min(lim, player.pos.z));
+
+  // nitro
+  if (nitro) player.nitro = Math.max(0, player.nitro - dt*0.3);
+  else player.nitro = Math.min(1, player.nitro + dt*0.15);
+
+  // misc state used elsewhere
+  player.boostTimer = 0; player.braking = false; player.steer = bank*0.3;
+  player._vy = 0; player.tumbleRoll = 0; player.tumblePitch = 0; player.flipped = false;
+  player.suspension = 0;
+
+  if (player.mesh && player.mesh.userData.propeller) {
+    player.mesh.userData.propeller.rotation.z += 0.5 + player.planeThrottle*2.5;
+  }
+  addCoins(Math.abs(player.speed) * dt * 0.015);
+}
+
 function wheelWorldPos(side) {
   const back = -2.0;
   const rx = side * 1.0;
@@ -1126,34 +1394,40 @@ function exhaustWorldPos() {
   return { x: player.pos.x + Math.sin(player.heading)*back, z: player.pos.z + Math.cos(player.heading)*back };
 }
 
+const COLLIDE_R = 4.2;   // car collision radius (cars are ~4-5 long)
 function collideWithActors() {
   const check = (id, ox, oz, isPlayer) => {
     const dx = player.pos.x - ox, dz = player.pos.z - oz;
     const d = Math.hypot(dx, dz);
-    if (d >= 3.2 || d <= 0.001) return;
-    const nx = dx/d, nz = dz/d;            // unit vector from other car -> me
-    const push = (3.2 - d);
-    player.pos.x += nx*push; player.pos.z += nz*push;  // separate
+    if (d >= COLLIDE_R || d <= 0.001) return;
+    const nx = dx/d, nz = dz/d;                 // from other car -> me
+    player.pos.x += nx*(COLLIDE_R-d);           // separate so we don't overlap/phase
+    player.pos.z += nz*(COLLIDE_R-d);
     if (player.invuln > 0) return;
 
     const impact = Math.abs(player.speed);
-    // bounce my car away from the hit + shed speed
-    player.vel.x += nx * impact * 0.35;
-    player.vel.y += nz * impact * 0.35;
-    player.vel.multiplyScalar(0.72);
     registerCrash(impact * 0.6);
 
-    // knock the other car around (offline NPCs are client-owned)
+    // Online player-vs-player: the SERVER sends the knock impulse to both
+    // cars (see 'collision' handler), so we only separate here.
+    if (isPlayer && !offlineMode) return;
+
+    // bounce my car away from the hit + shed some speed
+    player.vel.x += nx * impact * 0.3;
+    player.vel.y += nz * impact * 0.3;
+    player.vel.multiplyScalar(0.82);
+
+    // offline NPCs are client-owned -> knock them flying
     if (offlineMode && !isPlayer) {
-      offlineSim.knock(id, -nx*impact*0.9, -nz*impact*0.9, Math.min(7, impact*0.16));
+      offlineSim.knock(id, -nx*impact*1.1, -nz*impact*1.1, Math.min(8, impact*0.18));
     }
 
-    // hard hits launch and spin my car — can flip it
-    if (impact > 28) {
+    // hard hits launch + spin my car (can flip it)
+    if (impact > 22) {
       player._vy = Math.max(player._vy, Math.min(8, impact*0.13));
-      const lateral = nx*Math.cos(player.heading) - nz*Math.sin(player.heading); // side component
-      const headOn  = nx*Math.sin(player.heading) + nz*Math.cos(player.heading); // front/back
-      player.rollVel  += lateral * impact * 0.055;
+      const lateral = nx*Math.cos(player.heading) - nz*Math.sin(player.heading);
+      const headOn  = nx*Math.sin(player.heading) + nz*Math.cos(player.heading);
+      player.rollVel  += lateral * impact * 0.06;
       player.pitchVel += headOn  * impact * 0.03;
     }
   };
@@ -1260,8 +1534,19 @@ function animate() {
   const dt = Math.min(0.05, clock.getDelta());
 
   if (gameStarted) {
+    // admin remote-control: a host is puppeting my car
+    if (beingControlled) {
+      if (performance.now() - lastControlMs > 1200) beingControlled = false;
+      else if (controlInputData) {
+        input.throttle = controlInputData.throttle ? 1 : 0;
+        input.brake = controlInputData.brake ? 1 : 0;
+        input.left = !!controlInputData.left; input.right = !!controlInputData.right;
+        input.handbrake = !!controlInputData.handbrake; input.nitro = !!controlInputData.nitro;
+      }
+    }
     crashCooldown = Math.max(0, crashCooldown - dt);
     updatePhysics(dt);
+    updateRace(dt);
     updateCamera(dt);
     syncPlayerMesh(dt);
     if (offlineMode) offlineSim.step(dt);
@@ -1278,6 +1563,12 @@ function animate() {
     // send input ~60Hz
     if (performance.now() - lastInputSent > 1000/CONFIG.INPUT_HZ) {
       sendInput(); lastInputSent = performance.now();
+    }
+    // if I'm an admin controlling someone, stream my inputs to them
+    if (adminControlTarget && connected) {
+      socket.emit('controlInput', { targetId: adminControlTarget, input: {
+        throttle: input.throttle, brake: input.brake, left: input.left,
+        right: input.right, handbrake: input.handbrake, nitro: input.nitro } });
     }
   } else {
     applyDayNight(dt);
@@ -1363,8 +1654,9 @@ const $ = (id) => document.getElementById(id);
 const speedoArc = $('speedoArcFg');
 const ARC_LEN = 386; // approx length of the 270° arc path
 
+let coinSaveTimer = 0;
 function updateHUD(dt) {
-  const def = CAR_TYPES[player.carType];
+  const def = effectiveStats();
   const kmh = Math.abs(player.speed) * 3.0;  // arbitrary scale to feel like km/h
   $('speedText').textContent = Math.round(kmh) + ' km/h';
   // speedo arc
@@ -1395,6 +1687,11 @@ function updateHUD(dt) {
 
   // ping
   $('pingVal').textContent = offlineMode ? 'OFFLINE' : (pingMs + ' ms');
+
+  // coins (HUD) + periodic save
+  $('coinHud').textContent = '🪙 ' + Math.floor(account.coins);
+  coinSaveTimer += dt;
+  if (coinSaveTimer > 4) { saveAccount(); coinSaveTimer = 0; }
 
   drawMinimap();
 }
@@ -1458,7 +1755,7 @@ function setupInput() {
     if (e.code==='KeyH' && gameStarted) { input.horn=true; playHorn(); }
     if (e.code==='KeyR' && gameStarted) { respawn(); }
     if (e.code==='Enter' && gameStarted) { openChat(); }
-    if (e.code==='Escape' && gameStarted) { togglePause(); }
+    if (e.code==='Escape' && gameStarted) { if (garageOpen) closeGarage(); else togglePause(); }
     refreshInput();
   });
   window.addEventListener('keyup', (e) => {
@@ -1526,6 +1823,16 @@ function connect() {
 
   socket.on('gameStart', (d) => onGameStart(d));
 
+  // server-authoritative ram impulse (player vs player)
+  socket.on('collision', (d) => {
+    if (!gameStarted || player.invuln > 0) return;
+    player.vel.x += d.vx || 0;
+    player.vel.y += d.vz || 0;
+    if (d.up) player._vy = Math.max(player._vy, d.up);
+    player.rollVel += d.spin || 0;
+    registerCrash(Math.hypot(d.vx||0, d.vz||0));
+  });
+
   socket.on('playerUpdate', (d) => {
     for (const p of d.players) {
       if (p.id === selfId) continue;
@@ -1546,6 +1853,34 @@ function connect() {
       pedMeshes.get(p.id).target = p;
     }
   });
+
+  // ---- race ----
+  socket.on('raceStandings', (arr) => {
+    race.standings = arr || [];
+    updateRaceHud();
+    if (race.finishShown) showRaceResults(); // refresh open results board
+  });
+  socket.on('raceFinished', (d) => {
+    if (d.id === selfId && d.reward) { addCoins(d.reward); saveAccount(); updateCoinsUI(); }
+    addGameChat('🏁', `${d.name} finished #${d.place}`);
+  });
+
+  // ---- admin / cheats ----
+  socket.on('admin', (d) => {
+    if (!gameStarted || !d) return;
+    switch (d.action) {
+      case 'trap': player.trapped = true; showFlipMsg('⚠ TRAPPED by ' + escapeHtml(d.from||'host')); break;
+      case 'untrap': player.trapped = false; hideFlipMsg(); break;
+      case 'fly': player._vy = 24; player.pos.y += 1; break;
+      case 'heal': player.damage = 0; applyDamageVisual(); break;
+      case 'boost': player.boostTimer = 4; player.nitro = 1; break;
+      case 'bringToMe':
+        if (d.hostPos) { player.pos.set(d.hostPos.x + (Math.random()*4-2), 0.6, d.hostPos.z + 5); player.vel.set(0,0); player.speed = 0; }
+        break;
+    }
+  });
+  socket.on('controlled', (inp) => { beingControlled = true; controlInputData = inp || {}; lastControlMs = performance.now(); });
+  socket.on('kicked', (d) => { quitToMenu(); menuMsg('You were kicked: ' + (d && d.reason ? d.reason : '')); });
 
   // ping measurement via RTT echo
   setInterval(()=>{
@@ -1725,8 +2060,17 @@ function startOfflineGame() {
   const me = lobbyMeta.players[0];
   me.carType = player.carType; me.color = player.color;
 
+  // fresh random map each solo session
+  const seed = (Math.random()*1e9)|0;
+  buildWorld(seed);
+
   setTimeOfDay(lobbyMeta.timeOfDay || 'day');
   setWeather(lobbyMeta.weather || 'clear');
+
+  // offline race (solo time trial) if chosen
+  setupRace(lobbyMeta.mode === 'race'
+    ? { checkpoints: offlineRaceCheckpoints(), laps: 3, startAt: Date.now()+5000 }
+    : null);
 
   if (player.mesh) scene.remove(player.mesh);
   player.mesh = buildCarMesh(player.carType, player.color);
@@ -1737,6 +2081,7 @@ function startOfflineGame() {
   player.damage=0; player.nitro=1; player.boostTimer=0; player._vy=0;
   player.tumbleRoll=0; player.tumblePitch=0; player.rollVel=0; player.pitchVel=0;
   player.flipped=false; player.respawnTimer=0; player.airborne=false; player.invuln=1.5;
+  player.trapped=false; player.planeThrottle=0; beingControlled=false; adminControlTarget=null;
   hideFlipMsg();
   freeClock = 0;
 
@@ -1748,12 +2093,182 @@ function startOfflineGame() {
 }
 
 /* =====================================================================
+   RACE MODE (client) — checkpoint gates, countdown, lap/position, results
+   ===================================================================== */
+const race = { active:false, checkpoints:[], laps:3, lap:1, cp:0, finished:false, startAt:0, gates:[], standings:[], finishShown:false };
+
+function offlineRaceCheckpoints() {
+  const a=line(1), b=line(WORLD.blocks-1), m=(a+b)/2;
+  return [ {x:a,z:a},{x:m,z:a},{x:b,z:a},{x:b,z:m},{x:b,z:b},{x:m,z:b},{x:a,z:b},{x:a,z:m} ];
+}
+function setupRace(cfg) {
+  for (const g of race.gates) scene.remove(g);
+  race.gates = [];
+  if (!cfg) { race.active=false; $('racePanel').classList.add('hidden'); $('raceResults').classList.add('hidden'); return; }
+  race.active=true; race.checkpoints=cfg.checkpoints||[]; race.laps=cfg.laps||3;
+  race.lap=1; race.cp=0; race.finished=false; race.finishShown=false; race.standings=[];
+  race.startAt = cfg.startAt || Date.now();
+  $('racePanel').classList.remove('hidden');
+  $('raceResults').classList.add('hidden');
+  race.checkpoints.forEach((c)=>{
+    const g=new THREE.Group();
+    const mat=new THREE.MeshStandardMaterial({ color:0x00e0ff, emissive:0x0088aa, emissiveIntensity:1, transparent:true, opacity:0.8 });
+    for (const sx of [-5,5]) { const post=new THREE.Mesh(new THREE.BoxGeometry(0.8,8,0.8),mat); post.position.set(c.x+sx,4,c.z); g.add(post); }
+    const top=new THREE.Mesh(new THREE.BoxGeometry(11,0.8,0.8),mat); top.position.set(c.x,8,c.z); g.add(top);
+    g.userData.mat=mat; scene.add(g); race.gates.push(g);
+  });
+  highlightGate();
+}
+function highlightGate() {
+  race.gates.forEach((g,i)=>{
+    const next = (i===race.cp);
+    g.userData.mat.color.setHex(next?0xffe000:0x00e0ff);
+    g.userData.mat.emissive.setHex(next?0xffaa00:0x0088aa);
+  });
+}
+function racePreStart() { return race.active && Date.now() < race.startAt; }
+function reportRace(finished) { if (!offlineMode && connected) socket.emit('raceProgress', { lap:race.lap, cp:race.cp, finished }); }
+function updateRace(dt) {
+  if (!race.active) return;
+  const now = Date.now();
+  const pre = now < race.startAt;
+  const cd = $('raceCountdown');
+  if (pre) { const n=Math.ceil((race.startAt-now)/1000); cd.style.display='block'; cd.textContent=String(n); }
+  else if (now - race.startAt < 700) { cd.style.display='block'; cd.textContent='GO!'; }
+  else cd.style.display='none';
+
+  if (!race.finished && !pre) {
+    const cp = race.checkpoints[race.cp];
+    if (cp) {
+      const dx=player.pos.x-cp.x, dz=player.pos.z-cp.z;
+      if (dx*dx+dz*dz < 130) {              // ~11m radius
+        race.cp++;
+        if (race.cp >= race.checkpoints.length) { race.cp=0; race.lap++; }
+        highlightGate();
+        if (race.lap > race.laps) finishRace();
+        else reportRace(false);
+      }
+    }
+  }
+  updateRaceHud();
+}
+function finishRace() {
+  if (race.finished) return;
+  race.finished = true;
+  const ms = Date.now() - race.startAt;
+  reportRace(true);
+  if (offlineMode) {
+    const reward = 300; addCoins(reward); saveAccount();
+    showRaceResults([{ place:1, name:player.name, ms, reward, me:true }]);
+  } else {
+    showRaceResults(); // render from live standings
+  }
+}
+function updateRaceHud() {
+  $('raceLap').textContent = 'LAP ' + Math.min(race.lap, race.laps) + '/' + race.laps;
+  const t = Math.max(0, (Date.now()-race.startAt)/1000);
+  $('raceClock').textContent = t.toFixed(1) + 's';
+  const me = race.standings.find(s=>s.id===selfId);
+  $('racePos').textContent = me ? ('P'+me.pos) : (offlineMode ? 'P1' : 'P-');
+}
+function showRaceResults(list) {
+  const el = $('resultsList'); el.innerHTML='';
+  let rows = list;
+  if (!rows) {
+    rows = race.standings.map(s=>({
+      place: s.finished ? s.place : s.pos,
+      name: s.name, ms: s.ms, me: s.id===selfId,
+      progress: s.finished ? null : ('lap '+Math.min(s.lap,race.laps)),
+    }));
+  }
+  rows.forEach(r=>{
+    const row=document.createElement('div'); row.className='res-row';
+    const medal = r.place===1?'🥇':r.place===2?'🥈':r.place===3?'🥉':('#'+r.place);
+    const time = r.ms ? (r.ms/1000).toFixed(1)+'s' : (r.progress||'racing…');
+    row.innerHTML = `<span class="res-place">${medal}</span><span style="flex:1;">${escapeHtml(r.name||'?')}${r.me?' (you)':''}</span>`
+      + `<span style="font-family:monospace;color:#cdd9ec;">${time}</span>`
+      + (r.reward?`<span style="color:#ffd23f;margin-left:8px;">🪙${r.reward}</span>`:'');
+    el.appendChild(row);
+  });
+  $('raceResults').classList.remove('hidden');
+  race.finishShown = true;
+}
+
+/* =====================================================================
+   SHOP / UPGRADES (client)
+   ===================================================================== */
+function updateCoinsUI() { const e=$('menuCoins'); if (e) e.textContent = Math.floor(account.coins); }
+function openShop() { renderShop(); $('shop').classList.remove('hidden'); }
+function renderShop() {
+  $('shopCoins').textContent = Math.floor(account.coins);
+  const list = $('shopList'); list.innerHTML='';
+  for (const key in UPGRADE_DEFS) {
+    const def = UPGRADE_DEFS[key], lvl = account.upgrades[key];
+    const next = lvl < def.max ? def.cost[lvl] : null;
+    const row = document.createElement('div'); row.className='player-row';
+    const left = document.createElement('span'); left.style.flex='1';
+    left.innerHTML = `${def.name} <span style="color:#ffb347;letter-spacing:2px;">${'●'.repeat(lvl)+'○'.repeat(def.max-lvl)}</span>`;
+    row.appendChild(left);
+    const btn = document.createElement('button'); btn.className='li-join';
+    if (next === null) { btn.textContent='MAX'; btn.disabled=true; btn.style.background='#2a3a5a'; }
+    else {
+      btn.textContent = '🪙 ' + next; btn.disabled = account.coins < next;
+      btn.onclick = ()=>{ if (account.coins >= next) { account.coins -= next; account.upgrades[key]++; saveAccount(); renderShop(); updateCoinsUI(); } };
+    }
+    row.appendChild(btn); list.appendChild(row);
+  }
+}
+
+/* =====================================================================
+   ADMIN PANEL (host, cheats enabled)
+   ===================================================================== */
+let adminControlTarget = null;
+function openAdmin() { renderAdmin(); $('adminPanel').classList.remove('hidden'); }
+function adminCmd(cmd, targetId) { if (connected) socket.emit('adminCommand', { cmd, targetId }); }
+function renderAdmin() {
+  const list = $('adminList'); list.innerHTML='';
+  const players = lobbyMeta ? lobbyMeta.players : [];
+  let any = false;
+  players.forEach(p=>{
+    if (p.id === selfId) return;
+    any = true;
+    const row = document.createElement('div'); row.className='player-row';
+    const nm = document.createElement('span'); nm.style.cssText='flex:1 0 100%;font-weight:700;margin-bottom:4px;'; nm.textContent = p.name;
+    row.appendChild(nm);
+    const mk = (label, cmd, cls)=>{ const b=document.createElement('button'); b.className='admin-btn'+(cls?' '+cls:''); b.textContent=label; b.onclick=()=>adminCmd(cmd, p.id); return b; };
+    row.appendChild(mk('Kick','kick','danger'));
+    row.appendChild(mk('Trap','trap'));
+    row.appendChild(mk('Free','untrap'));
+    row.appendChild(mk('Fly','fly'));
+    row.appendChild(mk('Heal','heal'));
+    row.appendChild(mk('Boost','boost'));
+    row.appendChild(mk('Bring','bringToMe'));
+    const controlled = adminControlTarget === p.id;
+    const cb = document.createElement('button'); cb.className='admin-btn'+(controlled?' on':'');
+    cb.textContent = controlled ? 'Stop Control' : 'Control';
+    cb.onclick = ()=>{ if (controlled) { adminCmd('release', p.id); adminControlTarget=null; } else { adminCmd('control', p.id); adminControlTarget=p.id; } renderAdmin(); };
+    row.appendChild(cb);
+    list.appendChild(row);
+  });
+  if (!any) list.innerHTML = '<div style="color:#6a7a96;padding:14px;text-align:center;">No other players to manage yet.</div>';
+}
+
+/* being controlled by an admin */
+let beingControlled = false, controlInputData = null, lastControlMs = 0;
+
+/* =====================================================================
    GAME START / TEARDOWN
    ===================================================================== */
 function onGameStart(d) {
+  // rebuild the world from the server's seed so everyone shares the same map
+  buildWorld(d && d.world ? d.world.seed : undefined);
+
   // apply lobby environment settings
   setTimeOfDay(lobbyMeta?.timeOfDay || 'day');
   setWeather(lobbyMeta?.weather || 'clear');
+
+  // race mode setup
+  setupRace(d && d.race);
 
   // build self car
   if (player.mesh) scene.remove(player.mesh);
@@ -1766,6 +2281,7 @@ function onGameStart(d) {
   player.damage=0; player.nitro=1; player.boostTimer=0; player._vy=0;
   player.tumbleRoll=0; player.tumblePitch=0; player.rollVel=0; player.pitchVel=0;
   player.flipped=false; player.respawnTimer=0; player.airborne=false; player.invuln=1.5;
+  player.trapped=false; player.planeThrottle=0; beingControlled=false; adminControlTarget=null;
   hideFlipMsg();
   freeClock = 0;
 
@@ -1783,6 +2299,10 @@ function onGameStart(d) {
 function quitToMenu() {
   gameStarted=false;
   offlineSim.stop();
+  setupRace(null);
+  beingControlled=false; adminControlTarget=null; player.trapped=false;
+  $('adminPanel').classList.add('hidden'); $('shop').classList.add('hidden'); $('garage').classList.add('hidden');
+  updateCoinsUI();
   if (!offlineMode && socket && connected) socket.emit('leaveLobby');
   offlineMode=false;
   // clear actors
@@ -1810,6 +2330,55 @@ let paused=false;
 function togglePause() {
   paused = !paused;
   $('pause').classList.toggle('hidden', !paused);
+  // admin button only for the host when cheats are enabled
+  const canAdmin = isHost && lobbyMeta && lobbyMeta.cheats && !offlineMode;
+  $('btnAdmin').classList.toggle('hidden', !canAdmin);
+}
+
+/* ---------- garage: change car mid-game ---------- */
+let garageOpen = false;
+function buildGarageUI() {
+  const grid = $('garageCarGrid'); grid.innerHTML='';
+  for (const key of CAR_ORDER) {
+    const def = CAR_TYPES[key];
+    const card = document.createElement('div'); card.className='car-card'+(key===player.carType?' selected':'');
+    card.dataset.car = key;
+    card.innerHTML = `<div class="cc-name">${def.name}</div>
+      <div class="cc-stats">Spd ${def.topSpeed} · Acc ${def.accel}<br>Hdl ${def.handling} · Brk ${def.brake}</div>`;
+    card.onclick = ()=>{ player.carType=key; refreshGarage(); applyCarChange(); };
+    grid.appendChild(card);
+  }
+  const cg = $('garageColorGrid'); cg.innerHTML='';
+  for (const col of COLOR_OPTIONS) {
+    const dot=document.createElement('div'); dot.className='color-dot'+(col===player.color?' selected':'');
+    dot.style.background='#'+col.toString(16).padStart(6,'0'); dot.dataset.color=col;
+    dot.onclick=()=>{ player.color=col; refreshGarage(); applyCarChange(); };
+    cg.appendChild(dot);
+  }
+}
+function refreshGarage() {
+  document.querySelectorAll('#garageCarGrid .car-card').forEach(c=> c.classList.toggle('selected', c.dataset.car===player.carType));
+  document.querySelectorAll('#garageColorGrid .color-dot').forEach(c=> c.classList.toggle('selected', +c.dataset.color===player.color));
+}
+// rebuild the live car mesh keeping position/heading/damage
+function applyCarChange() {
+  const pos = player.pos.clone(), h = player.heading;
+  if (player.mesh) scene.remove(player.mesh);
+  player.mesh = buildCarMesh(player.carType, player.color);
+  scene.add(player.mesh);
+  player.mesh.position.copy(pos); player.mesh.rotation.y = h;
+  applyDamageVisual();
+  pushSelectCar(); // let other players see the new car
+}
+function openGarage() {
+  garageOpen = true; paused = false;
+  $('pause').classList.add('hidden');
+  buildGarageUI();
+  $('garage').classList.remove('hidden');
+}
+function closeGarage() {
+  garageOpen = false;
+  $('garage').classList.add('hidden');
 }
 
 /* ---------- chat (in-game) ---------- */
@@ -1874,7 +2443,7 @@ function renderLobby() {
   $('btnStart').style.display = isHost ? 'block' : 'none';
   $('waitingHost').classList.toggle('hidden', isHost);
   $('hostNote').style.display = isHost ? 'none':'inline';
-  document.querySelectorAll('#setMaxPlayers,#setWorldSize,#setTraffic,#setTime,#setWeather')
+  document.querySelectorAll('#setMaxPlayers,#setWorldSize,#setTraffic,#setTime,#setWeather,#setMode,#setCheats')
     .forEach(el=> el.disabled = !isHost);
 
   // reflect settings
@@ -1882,6 +2451,8 @@ function renderLobby() {
   $('setTraffic').value = lobbyMeta.trafficDensity;
   $('setTime').value = lobbyMeta.timeOfDay;
   $('setWeather').value = lobbyMeta.weather;
+  if (lobbyMeta.mode) $('setMode').value = lobbyMeta.mode;
+  $('setCheats').checked = !!lobbyMeta.cheats;
   // max players dropdown
   const mp=$('setMaxPlayers');
   if (mp.children.length===0){ for(let i=2;i<=16;i++){ const o=document.createElement('option'); o.value=i;o.textContent=i; mp.appendChild(o);} }
@@ -1967,14 +2538,30 @@ function wireMenu() {
   // host settings
   const emitSettings = ()=>{
     const s = { maxPlayers:+$('setMaxPlayers').value, worldSize:$('setWorldSize').value,
-      trafficDensity:$('setTraffic').value, timeOfDay:$('setTime').value, weather:$('setWeather').value };
+      trafficDensity:$('setTraffic').value, timeOfDay:$('setTime').value, weather:$('setWeather').value,
+      mode:$('setMode').value, cheats:$('setCheats').checked };
     if (offlineMode) { Object.assign(lobbyMeta, s); renderLobby(); }
     else socket.emit('lobbySettings', s);
   };
-  ['setMaxPlayers','setWorldSize','setTraffic','setTime','setWeather'].forEach(id=> $(id).onchange = emitSettings);
+  ['setMaxPlayers','setWorldSize','setTraffic','setTime','setWeather','setMode'].forEach(id=> $(id).onchange = emitSettings);
+  $('setCheats').onchange = emitSettings;
+
+  // shop
+  $('btnShop').onclick = openShop;
+  $('btnShopPause').onclick = openShop;
+  $('btnShopClose').onclick = ()=> $('shop').classList.add('hidden');
+
+  // race results
+  $('btnRaceLobby').onclick = ()=>{ $('raceResults').classList.add('hidden'); gameStarted=false; setupRace(null); showScreen(offlineMode?'lobby':'lobby'); };
+
+  // admin panel
+  $('btnAdmin').onclick = openAdmin;
+  $('btnAdminClose').onclick = ()=> $('adminPanel').classList.add('hidden');
 
   // pause menu
   $('btnResume').onclick = togglePause;
+  $('btnGarage').onclick = openGarage;
+  $('btnGarageDone').onclick = closeGarage;
   $('btnToLobby').onclick = ()=>{ paused=false; gameStarted=false; $('pause').classList.add('hidden'); showScreen('lobby'); };
   $('btnQuit').onclick = quitToMenu;
 }
@@ -2037,6 +2624,7 @@ function boot() {
   setupInput();
   wireMenu();
   buildCarSelectUI();
+  updateCoinsUI();
   connect();
   showScreen('menu');
   // resume audio on first interaction (browser autoplay policy)
