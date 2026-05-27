@@ -1587,7 +1587,8 @@ function animateBoostPads(dt) {
 function syncPlayerMesh(dt) {
   const m = player.mesh; if (!m) return;
   m.position.set(player.pos.x, player.pos.y, player.pos.z);
-  m.rotation.set(player.pitch + player.tumblePitch + player.suspension*0.1, player.heading, player.bodyRoll + player.tumbleRoll);
+  // +PI so the nose points in the direction of travel (model front is local -Z)
+  m.rotation.set(player.pitch + player.tumblePitch + player.suspension*0.1, player.heading + Math.PI, player.bodyRoll + player.tumbleRoll);
   // wheels: spin + steer front
   const spin = player.speed * dt * 2;
   for (const w of m.userData.wheels) {
@@ -1615,8 +1616,8 @@ function interpolateRemotes(dt) {
     r.mesh.position.x += (r.target.x - r.mesh.position.x)*k;
     r.mesh.position.y += (r.target.y - r.mesh.position.y)*k;
     r.mesh.position.z += (r.target.z - r.mesh.position.z)*k;
-    // heading lerp (shortest)
-    let dh = r.target.h - r.mesh.rotation.y;
+    // heading lerp (shortest); +PI so nose faces travel direction
+    let dh = (r.target.h + Math.PI) - r.mesh.rotation.y;
     while (dh>Math.PI) dh-=Math.PI*2; while (dh<-Math.PI) dh+=Math.PI*2;
     r.mesh.rotation.y += dh*k;
     // steer front wheels + spin
@@ -1633,7 +1634,7 @@ function interpolateNpcs(dt) {
     n.mesh.position.x += (n.target.x - n.mesh.position.x)*k;
     n.mesh.position.z += (n.target.z - n.mesh.position.z)*k;
     n.mesh.position.y += ((n.target.y||0) - n.mesh.position.y)*k;
-    let dh = n.target.h - n.mesh.rotation.y;
+    let dh = (n.target.h + Math.PI) - n.mesh.rotation.y;
     while (dh>Math.PI) dh-=Math.PI*2; while (dh<-Math.PI) dh+=Math.PI*2;
     n.mesh.rotation.y += dh*k;
     for (const w of n.mesh.userData.wheels) w.children.forEach(c=>c.rotation.x += n.target.s*dt*2);
