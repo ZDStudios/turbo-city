@@ -2603,7 +2603,7 @@ function refreshLobbyList() {
       item.innerHTML = `<div><div class="li-name">${escapeHtml(l.name)}</div>
         <div class="li-meta">Host: ${escapeHtml(l.hostName)} · ${l.players}/${l.maxPlayers} players ${l.started?'· IN GAME':''}</div></div>`;
       const btn=document.createElement('button'); btn.className='li-join'; btn.textContent='JOIN';
-      btn.disabled = l.started || l.players>=l.maxPlayers;
+      btn.disabled = l.players>=l.maxPlayers; // joining in-progress games is allowed now
       btn.onclick=()=>{
         getName();
         socket.emit('joinLobby', { lobbyId:l.id, playerName:player.name, carType:player.carType, color:player.color }, (res)=>{
