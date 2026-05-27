@@ -122,6 +122,8 @@
     border-radius:8px; font-size:12px; white-space:nowrap; border:1px solid #2a3a5a; }
   #boostMsg { position:absolute; top:80px; left:50%; transform:translateX(-50%); font-size:26px; font-weight:800;
     color:#00e0ff; text-shadow:0 2px 8px #000; opacity:0; transition:opacity .3s; }
+  #flipMsg { position:absolute; top:46%; left:50%; transform:translate(-50%,-50%); font-size:30px; font-weight:800;
+    color:#ff5252; text-shadow:0 2px 12px #000; text-align:center; line-height:1.4; display:none; }
   #speedLines { position:fixed; inset:0; z-index:9; pointer-events:none; opacity:0; transition:opacity .3s;
     background: radial-gradient(ellipse at center, transparent 38%, rgba(255,255,255,0.08) 70%, rgba(255,255,255,0.22) 100%); }
   #controlsHint { position:absolute; right:24px; bottom:215px; font-size:11px; color:#6a7a96; text-align:right; line-height:1.6; }
@@ -253,9 +255,10 @@
 
   <div id="nameTags"></div>
   <div id="boostMsg">NITRO BOOST!</div>
+  <div id="flipMsg"></div>
   <div id="controlsHint">
     WASD / Arrows — Drive &nbsp; SPACE — Handbrake<br/>
-    SHIFT — Nitro &nbsp; H — Horn &nbsp; ENTER — Chat<br/>
+    SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; ENTER — Chat<br/>
     Right-drag — Look &nbsp; Wheel — Zoom &nbsp; ESC — Menu
   </div>
 </div>
@@ -438,6 +441,9 @@ const player = {
   damage: 0, nitro: 1.0, nitroCooldown: 0, boostTimer: 0,
   braking:false, mesh:null,
   bodyRoll:0, pitch:0, suspension:0,
+  // rollover / flip physics
+  tumbleRoll:0, tumblePitch:0, rollVel:0, pitchVel:0,
+  airborne:false, flipped:false, respawnTimer:0, invuln:0,
 };
 
 const input = { throttle:0, brake:0, left:false, right:false, handbrake:false, nitro:false, horn:false };
@@ -936,15 +942,21 @@ function updatePhysics(dt) {
   // signed forward speed
   let speed = player.vel.dot(fwd);
 
+  // controls are locked while flipped/tumbling on its roof
+  if (player.invuln > 0) player.invuln -= dt;
+  const locked = player.flipped;
+  const thr = locked ? 0 : input.throttle;
+  const brk = locked ? 0 : input.brake;
+
   // engine / brake
   let force = 0;
-  const nitroActive = (input.nitro && player.nitro > 0.02) || player.boostTimer > 0;
-  if (input.throttle > 0) {
-    force = def.accel * input.throttle * (nitroActive ? 1.9 : 1);
+  const nitroActive = !locked && ((input.nitro && player.nitro > 0.02) || player.boostTimer > 0);
+  if (thr > 0) {
+    force = def.accel * thr * (nitroActive ? 1.9 : 1);
   }
-  if (input.brake > 0) {
+  if (brk > 0) {
     if (speed > 0.5) force = -def.brake;
-    else force = -def.accel*0.5*input.brake; // reverse
+    else force = -def.accel*0.5*brk; // reverse
   }
   // top speed clamp via diminishing force
   const topNow = def.topSpeed * (nitroActive ? 1.35 : 1);
@@ -960,7 +972,7 @@ function updatePhysics(dt) {
 
   // steering -> heading change (scaled by speed direction)
   const speedFactor = Math.min(1, Math.abs(speed)/12);
-  let steerInput = (input.left?1:0) - (input.right?1:0);
+  let steerInput = locked ? 0 : ((input.left?1:0) - (input.right?1:0));
   player.steer += (steerInput - player.steer) * Math.min(1, dt*8);
   const reverseSign = speed < -0.5 ? -1 : 1;
   const turn = player.steer * (def.handling * 0.5) * speedFactor * reverseSign;
@@ -991,25 +1003,45 @@ function updatePhysics(dt) {
   const driftAmt = Math.abs(newL);
   const isDrifting = driftAmt > 4 && Math.abs(speed) > 6;
 
-  // ---- vertical / suspension (ramps + jumps + bumps) ----
-  let groundY = 0;
+  // ---- vertical / ramp launch / airborne tumble (rollover physics) ----
+  if (!player._vy) player._vy = 0;
+  let groundY = 0, onRamp = false;
   for (const r of ramps) {
     if (Math.abs(player.pos.x - r.x) < r.halfX && Math.abs(player.pos.z - r.z) < r.halfZ) {
-      groundY = 2.5; // launch height when on ramp
+      groundY = 2.5; onRamp = true;
     }
   }
-  // gravity-based airborne
-  if (!player._vy) player._vy = 0;
+  // ramps fling the car upward at speed (fast hits can backflip)
+  if (onRamp && Math.abs(player.speed) > 12) {
+    player._vy = Math.max(player._vy, Math.abs(player.speed) * 0.34);
+    if (Math.abs(player.speed) > 45 && Math.abs(player.pitchVel) < 0.5) player.pitchVel = -2.0;
+  }
   player.pos.y += player._vy * dt;
-  if (player.pos.y > groundY) {
-    player._vy -= 26 * dt; // gravity
+  const airborne = player.pos.y > groundY + 0.06;
+  player.airborne = airborne;
+  if (airborne) {
+    player._vy -= 26 * dt;                       // gravity
+    player.tumbleRoll  += player.rollVel  * dt;  // integrate spin in the air
+    player.tumblePitch += player.pitchVel * dt;
+    player.rollVel  *= (1 - dt*0.15);
+    player.pitchVel *= (1 - dt*0.15);
   } else {
+    if (player._vy < -2) player.suspension = Math.min(1, -player._vy/18); // landing thud
     player.pos.y = groundY;
-    if (player._vy < -2) player.suspension = Math.min(1, -player._vy/20); // landing compression
-    player._vy = Math.max(0, player._vy);
-    if (groundY > 0.1) player._vy = 9; // bounce up off ramp
+    if (player._vy < 0) player._vy = 0;
+    resolveLanding(dt);
   }
   player.suspension *= (1 - dt*4);
+
+  // fell off the world -> respawn
+  if (player.pos.y < -15) respawn();
+
+  // flipped: count down to auto-respawn (or press R)
+  if (player.flipped) {
+    player.respawnTimer -= dt;
+    showFlipMsg('FLIPPED!  Respawning in ' + Math.max(0, Math.ceil(player.respawnTimer)) + '…<br><span style="font-size:16px;color:#cdd9ec;">press R to respawn now</span>');
+    if (player.respawnTimer <= 0) respawn();
+  }
 
   // body roll from lateral force, pitch from accel
   const targetRoll = -newL * 0.02;
@@ -1095,19 +1127,78 @@ function exhaustWorldPos() {
 }
 
 function collideWithActors() {
-  const check = (ox, oz) => {
+  const check = (id, ox, oz, isPlayer) => {
     const dx = player.pos.x - ox, dz = player.pos.z - oz;
     const d = Math.hypot(dx, dz);
-    if (d < 3 && d > 0.001) {
-      const push = (3 - d);
-      player.pos.x += (dx/d)*push; player.pos.z += (dz/d)*push;
-      player.vel.multiplyScalar(0.6);
-      registerCrash(Math.abs(player.speed)*0.5);
+    if (d >= 3.2 || d <= 0.001) return;
+    const nx = dx/d, nz = dz/d;            // unit vector from other car -> me
+    const push = (3.2 - d);
+    player.pos.x += nx*push; player.pos.z += nz*push;  // separate
+    if (player.invuln > 0) return;
+
+    const impact = Math.abs(player.speed);
+    // bounce my car away from the hit + shed speed
+    player.vel.x += nx * impact * 0.35;
+    player.vel.y += nz * impact * 0.35;
+    player.vel.multiplyScalar(0.72);
+    registerCrash(impact * 0.6);
+
+    // knock the other car around (offline NPCs are client-owned)
+    if (offlineMode && !isPlayer) {
+      offlineSim.knock(id, -nx*impact*0.9, -nz*impact*0.9, Math.min(7, impact*0.16));
+    }
+
+    // hard hits launch and spin my car — can flip it
+    if (impact > 28) {
+      player._vy = Math.max(player._vy, Math.min(8, impact*0.13));
+      const lateral = nx*Math.cos(player.heading) - nz*Math.sin(player.heading); // side component
+      const headOn  = nx*Math.sin(player.heading) + nz*Math.cos(player.heading); // front/back
+      player.rollVel  += lateral * impact * 0.055;
+      player.pitchVel += headOn  * impact * 0.03;
     }
   };
-  for (const n of npcCars.values()) if (n.target) check(n.target.x, n.target.z);
-  for (const r of remotePlayers.values()) if (r.target) check(r.target.x, r.target.z);
+  for (const [id,n] of npcCars) if (n.target) check(id, n.target.x, n.target.z, false);
+  for (const [id,r] of remotePlayers) if (r.target) check(id, r.target.x, r.target.z, true);
 }
+
+function normAngle(a){ while(a>Math.PI) a-=Math.PI*2; while(a<-Math.PI) a+=Math.PI*2; return a; }
+
+// Called every frame the car is on the ground: recover small tilts, or
+// declare the car FLIPPED if it landed on its side/roof.
+function resolveLanding(dt) {
+  const nr = normAngle(player.tumbleRoll);
+  const np = normAngle(player.tumblePitch);
+  const upright = Math.abs(nr) < 1.2 && Math.abs(np) < 1.2; // within ~69°
+  if (upright && !player.flipped) {
+    player.tumbleRoll  += (0 - nr) * Math.min(1, dt*6);
+    player.tumblePitch += (0 - np) * Math.min(1, dt*6);
+    player.rollVel  *= (1 - dt*8);
+    player.pitchVel *= (1 - dt*8);
+  } else {
+    if (!player.flipped) { player.flipped = true; player.respawnTimer = 3.0; }
+    player.rollVel  *= (1 - dt*10);
+    player.pitchVel *= (1 - dt*10);
+    player.vel.multiplyScalar(1 - Math.min(1, dt*6)); // grind to a halt
+  }
+}
+
+function respawn() {
+  // drop back onto the nearest vertical road, facing up the road
+  const gx = Math.round((player.pos.x + WORLD.half) / WORLD.spacing);
+  const sx = line(Math.max(0, Math.min(WORLD.blocks, gx)));
+  player.pos.set(sx, 0.6, Math.max(-WORLD.half, Math.min(WORLD.half, player.pos.z)));
+  player.vel.set(0,0); player._vy = 0; player.speed = 0;
+  player.tumbleRoll = 0; player.tumblePitch = 0; player.rollVel = 0; player.pitchVel = 0;
+  player.bodyRoll = 0; player.pitch = 0;
+  player.flipped = false; player.respawnTimer = 0; player.airborne = false;
+  player.damage = Math.max(0, player.damage - 0.5); // patch up half the damage
+  applyDamageVisual();
+  player.invuln = 1.5;
+  hideFlipMsg();
+}
+
+function showFlipMsg(html){ const el=$('flipMsg'); el.innerHTML=html; el.style.display='block'; }
+function hideFlipMsg(){ const el=$('flipMsg'); if(el) el.style.display='none'; }
 
 let crashCooldown = 0;
 function registerCrash(impactSpeed) {
@@ -1205,7 +1296,7 @@ function animateBoostPads(dt) {
 function syncPlayerMesh(dt) {
   const m = player.mesh; if (!m) return;
   m.position.set(player.pos.x, player.pos.y, player.pos.z);
-  m.rotation.set(player.pitch + player.suspension*0.1, player.heading, player.bodyRoll);
+  m.rotation.set(player.pitch + player.tumblePitch + player.suspension*0.1, player.heading, player.bodyRoll + player.tumbleRoll);
   // wheels: spin + steer front
   const spin = player.speed * dt * 2;
   for (const w of m.userData.wheels) {
@@ -1250,6 +1341,7 @@ function interpolateNpcs(dt) {
     const k = Math.min(1, dt*8);
     n.mesh.position.x += (n.target.x - n.mesh.position.x)*k;
     n.mesh.position.z += (n.target.z - n.mesh.position.z)*k;
+    n.mesh.position.y += ((n.target.y||0) - n.mesh.position.y)*k;
     let dh = n.target.h - n.mesh.rotation.y;
     while (dh>Math.PI) dh-=Math.PI*2; while (dh<-Math.PI) dh+=Math.PI*2;
     n.mesh.rotation.y += dh*k;
@@ -1364,6 +1456,7 @@ function setupInput() {
     keys[e.code] = true;
     if (e.code==='Space') e.preventDefault();
     if (e.code==='KeyH' && gameStarted) { input.horn=true; playHorn(); }
+    if (e.code==='KeyR' && gameStarted) { respawn(); }
     if (e.code==='Enter' && gameStarted) { openChat(); }
     if (e.code==='Escape' && gameStarted) { togglePause(); }
     refreshInput();
@@ -1534,9 +1627,10 @@ const offlineSim = {
       const seg = Math.floor(Math.random()*path.length);
       const a = path[seg], bpt = path[(seg+1)%path.length], t = Math.random();
       this.npcs.push({ id:'npc_'+i, path:i%this.paths.length, seg,
-        x:a.x+(bpt.x-a.x)*t, z:a.z+(bpt.z-a.z)*t,
+        x:a.x+(bpt.x-a.x)*t, z:a.z+(bpt.z-a.z)*t, y:0,
         heading:Math.atan2(bpt.x-a.x, bpt.z-a.z), speed:0,
-        maxSpeed:16+Math.random()*10, color:colors[i%colors.length] });
+        maxSpeed:16+Math.random()*10, color:colors[i%colors.length],
+        knockVx:0, knockVz:0, knockVy:0, spin:0, knockSpin:0 });
     }
     this.peds = [];
     for (let i=0;i<12;i++){
@@ -1569,7 +1663,8 @@ const offlineSim = {
       const ax=n.x+Math.sin(n.heading)*7, az=n.z+Math.cos(n.heading)*7;
       if (d2(ax,az,player.pos.x,player.pos.z)<49) slow=true;
 
-      const desired = slow ? n.maxSpeed*0.25 : n.maxSpeed;
+      const knocked = Math.abs(n.knockVx)+Math.abs(n.knockVz)+n.y > 0.5;
+      const desired = (slow || knocked) ? n.maxSpeed*0.25 : n.maxSpeed;
       if (n.speed<desired) n.speed=Math.min(desired,n.speed+18*dt);
       else n.speed=Math.max(desired,n.speed-26*dt);
 
@@ -1581,9 +1676,15 @@ const offlineSim = {
       n.z += Math.cos(n.heading)*n.speed*dt;
       if (d2(n.x,n.z,target.x,target.z)<16) n.seg=(n.seg+1)%path.length;
 
+      // apply knockback impulse (decays), plus a hop + spin when rammed
+      n.x += n.knockVx*dt; n.z += n.knockVz*dt; n.y += n.knockVy*dt;
+      if (n.y > 0) n.knockVy -= 26*dt; else { n.y=0; n.knockVy=0; }
+      n.knockVx *= (1-Math.min(1,dt*2)); n.knockVz *= (1-Math.min(1,dt*2));
+      n.spin += n.knockSpin*dt; n.knockSpin *= (1-Math.min(1,dt*1.5));
+
       // push render target
       ensureNpc({ id:n.id, c:n.color });
-      npcCars.get(n.id).target = { x:n.x, z:n.z, h:n.heading, s:n.speed };
+      npcCars.get(n.id).target = { x:n.x, z:n.z, y:n.y, h:n.heading + n.spin, s:n.speed };
     }
     for (const p of this.peds){
       const target = p.loop[(p.seg+1)%p.loop.length];
@@ -1593,6 +1694,13 @@ const offlineSim = {
       ensurePed({ id:p.id });
       pedMeshes.get(p.id).target = { x:p.x, z:p.z, h:p.heading };
     }
+  },
+
+  knock(id, vx, vz, vy) {
+    const n = this.npcs.find(o => o.id === id);
+    if (!n) return;
+    n.knockVx += vx; n.knockVz += vz; n.knockVy += Math.max(0, vy);
+    n.knockSpin += (Math.random()-0.5) * 7;
   },
 
   stop() { this.running = false; },
@@ -1627,6 +1735,9 @@ function startOfflineGame() {
   player.pos.set(line(1) + Math.random()*4, 0, line(1)+4);
   player.vel.set(0,0); player.heading=0; player.speed=0;
   player.damage=0; player.nitro=1; player.boostTimer=0; player._vy=0;
+  player.tumbleRoll=0; player.tumblePitch=0; player.rollVel=0; player.pitchVel=0;
+  player.flipped=false; player.respawnTimer=0; player.airborne=false; player.invuln=1.5;
+  hideFlipMsg();
   freeClock = 0;
 
   offlineSim.init(lobbyMeta.trafficDensity || 'medium');
@@ -1653,6 +1764,9 @@ function onGameStart(d) {
   player.pos.set(line(1) + Math.random()*4, 0, line(1)+4);
   player.vel.set(0,0); player.heading=0; player.speed=0;
   player.damage=0; player.nitro=1; player.boostTimer=0; player._vy=0;
+  player.tumbleRoll=0; player.tumblePitch=0; player.rollVel=0; player.pitchVel=0;
+  player.flipped=false; player.respawnTimer=0; player.airborne=false; player.invuln=1.5;
+  hideFlipMsg();
   freeClock = 0;
 
   // seed npcs
