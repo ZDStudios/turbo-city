@@ -117,7 +117,7 @@ function publicLobbyList() {
       code: lobby.code,
       players: lobby.players.size,
       maxPlayers: lobby.maxPlayers,
-      hostName: host ? host.name : 'Unknown',
+      hostName: host ? host.name : (lobby.hostName || 'Server'),
       started: lobby.started,
     });
   }
@@ -151,8 +151,32 @@ function lobbyMetaPayload(lobby) {
     trafficDensity: lobby.trafficDensity,
     timeOfDay: lobby.timeOfDay,
     weather: lobby.weather,
+    mode: lobby.mode || 'open',
+    cheats: !!lobby.cheats,
     started: lobby.started,
     players: lobbyPlayersPayload(lobby),
+  };
+}
+
+// Race checkpoint loop around the inner city ring (matches client roads)
+function buildRaceCheckpoints() {
+  const a = WORLD.line(1), b = WORLD.line(WORLD.blocks - 1), m = (a + b) / 2;
+  return [
+    { x: a, z: a }, { x: m, z: a }, { x: b, z: a }, { x: b, z: m },
+    { x: b, z: b }, { x: m, z: b }, { x: a, z: b }, { x: a, z: m },
+  ];
+}
+
+function gameStartPayload(lobby) {
+  return {
+    meta: lobbyMetaPayload(lobby),
+    world: { blocks: WORLD.blocks, spacing: WORLD.spacing, seed: lobby.mapSeed },
+    npc: npcPayload(lobby),
+    mode: lobby.mode || 'open',
+    cheats: !!lobby.cheats,
+    race: lobby.race
+      ? { checkpoints: lobby.race.checkpoints, laps: lobby.race.laps, startAt: lobby.race.startAt }
+      : null,
   };
 }
 
@@ -207,12 +231,14 @@ function spawnNpcs(lobby) {
       t,
       x: a.x + (bpt.x - a.x) * t,
       z: a.z + (bpt.z - a.z) * t,
+      y: 0, vy: 0,
       heading: Math.atan2(bpt.x - a.x, bpt.z - a.z),
       speed: 0,
       maxSpeed: 16 + Math.random() * 10,
       color: colors[i % colors.length],
       honk: 0,
       stopped: false,
+      knockVx: 0, knockVz: 0, knockSpin: 0, spin: 0,
     });
   }
   return npcs;
@@ -309,6 +335,34 @@ function stepNpcs(lobby) {
       n.seg = (n.seg + 1) % path.length;
     }
 
+    // --- ramming: players knock NPCs around ---
+    for (const p of lobby.players.values()) {
+      if (!p.state) continue;
+      const dx = n.x - p.state.x, dz = n.z - p.state.z;
+      const dd = Math.hypot(dx, dz);
+      if (dd < 4.2 && dd > 0.001) {
+        const nx = dx / dd, nz = dz / dd;
+        const ps = Math.abs(p.state.speed || 0);
+        if (ps > 10) {
+          const f = Math.min(70, ps);
+          n.knockVx += nx * f * 0.7;
+          n.knockVz += nz * f * 0.7;
+          n.vy = Math.max(n.vy, Math.min(9, f * 0.2));
+          n.knockSpin += (Math.random() - 0.5) * 7;
+        } else {
+          // gentle separation at low speed so cars don't overlap
+          n.x += nx * (4.2 - dd);
+          n.z += nz * (4.2 - dd);
+        }
+      }
+    }
+    // integrate knockback impulse + vertical hop
+    n.x += n.knockVx * DT; n.z += n.knockVz * DT;
+    n.knockVx *= 0.9; n.knockVz *= 0.9;
+    n.y += n.vy * DT;
+    if (n.y > 0) n.vy -= 26 * DT; else { n.y = 0; n.vy = 0; }
+    n.spin += n.knockSpin * DT; n.knockSpin *= 0.92;
+
     if (n.honk > 0) n.honk = Math.max(0, n.honk - DT);
   }
 }
@@ -332,7 +386,8 @@ function npcPayload(lobby) {
       id: n.id,
       x: +n.x.toFixed(2),
       z: +n.z.toFixed(2),
-      h: +n.heading.toFixed(3),
+      y: +(n.y || 0).toFixed(2),
+      h: +(n.heading + (n.spin || 0)).toFixed(3),
       s: +n.speed.toFixed(1),
       c: n.color,
       honk: n.honk > 0 ? 1 : 0,
@@ -368,6 +423,7 @@ function stopLobbyLoop(lobby) {
 }
 
 function destroyLobby(lobby) {
+  if (lobby.persistent) return; // the official public server never closes
   stopLobbyLoop(lobby);
   if (lobby.code) codeToLobby.delete(lobby.code);
   lobbies.delete(lobby.id);
@@ -413,11 +469,15 @@ io.on('connection', (socket) => {
         name: lobbyName,
         hostId: socket.id,
         isPublic: !!(data && data.isPublic),
-        maxPlayers: clampInt(data && data.maxPlayers, 2, 16, 8),
+        maxPlayers: clampInt(data && data.maxPlayers, 2, 32, 8),
         worldSize: (data && data.worldSize) || 'medium',
         trafficDensity: (data && data.trafficDensity) || 'medium',
         timeOfDay: (data && data.timeOfDay) || 'day',
         weather: (data && data.weather) || 'clear',
+        mode: (data && data.mode) || 'open',
+        cheats: !!(data && data.cheats),
+        mapSeed: (Math.random() * 1e9) | 0,
+        race: null,
         started: false,
         players: new Map(),
         npcs: [],
@@ -455,9 +515,6 @@ io.on('connection', (socket) => {
       if (lobby.players.size >= lobby.maxPlayers) {
         if (ack) ack({ ok: false, error: 'Lobby is full' }); return;
       }
-      if (lobby.started) {
-        if (ack) ack({ ok: false, error: 'Game already started' }); return;
-      }
 
       const name = (data && data.playerName ? String(data.playerName) : 'Player').slice(0, 16);
       const player = makePlayer(socket.id, name, data);
@@ -465,9 +522,18 @@ io.on('connection', (socket) => {
       socketToLobby.set(socket.id, lobby.id);
       socket.join(lobby.id);
 
-      if (ack) ack({ ok: true, lobby: lobbyMetaPayload(lobby), selfId: socket.id });
+      if (ack) ack({ ok: true, lobby: lobbyMetaPayload(lobby), selfId: socket.id, started: lobby.started });
       io.to(lobby.id).emit('lobbyUpdate', lobbyMetaPayload(lobby));
       socket.to(lobby.id).emit('playerJoined', { id: socket.id, name });
+
+      // If the game is already running, drop the late-joiner straight in.
+      if (lobby.started) {
+        player.state = spawnState(lobby);
+        if (lobby.race) {
+          lobby.race.standings[socket.id] = { lap: 1, cp: 0, finished: false, place: 0, finishMs: 0 };
+        }
+        socket.emit('gameStart', gameStartPayload(lobby));
+      }
     } catch (err) {
       console.error('joinLobby error', err);
       if (ack) ack({ ok: false, error: 'Failed to join lobby' });
@@ -489,11 +555,13 @@ io.on('connection', (socket) => {
   socket.on('lobbySettings', (data) => {
     const lobby = currentLobby();
     if (!lobby || lobby.hostId !== socket.id) return;
-    if (data.maxPlayers != null) lobby.maxPlayers = clampInt(data.maxPlayers, 2, 16, lobby.maxPlayers);
+    if (data.maxPlayers != null) lobby.maxPlayers = clampInt(data.maxPlayers, 2, 32, lobby.maxPlayers);
     if (data.worldSize) lobby.worldSize = data.worldSize;
     if (data.trafficDensity) lobby.trafficDensity = data.trafficDensity;
     if (data.timeOfDay) lobby.timeOfDay = data.timeOfDay;
     if (data.weather) lobby.weather = data.weather;
+    if (data.mode) lobby.mode = data.mode === 'race' ? 'race' : 'open';
+    if (typeof data.cheats === 'boolean') lobby.cheats = data.cheats;
     if (typeof data.isPublic === 'boolean') lobby.isPublic = data.isPublic;
     io.to(lobby.id).emit('lobbyUpdate', lobbyMetaPayload(lobby));
   });
@@ -513,20 +581,29 @@ io.on('connection', (socket) => {
     const lobby = currentLobby();
     if (!lobby || lobby.hostId !== socket.id) return;
     lobby.started = true;
+    lobby.mapSeed = (Math.random() * 1e9) | 0; // fresh random map each game
     startLobbyLoop(lobby);
-    // give each player a spawn point along the start road
-    let idx = 0;
-    for (const p of lobby.players.values()) {
-      const sx = WORLD.line(1) + idx * 6;
-      const sz = WORLD.line(1) + 4;
-      p.state = { x: sx, y: 0, z: sz, heading: 0, speed: 0, braking: false, nitro: false, damage: 0 };
-      idx++;
+
+    // set up race state if this is a race lobby
+    if (lobby.mode === 'race') {
+      lobby.race = {
+        checkpoints: buildRaceCheckpoints(),
+        laps: 3,
+        startAt: Date.now() + 5000, // 5s countdown
+        finishers: 0,
+        standings: {},
+      };
+      for (const p of lobby.players.values()) {
+        lobby.race.standings[p.id] = { lap: 1, cp: 0, finished: false, place: 0, finishMs: 0 };
+      }
+    } else {
+      lobby.race = null;
     }
-    io.to(lobby.id).emit('gameStart', {
-      meta: lobbyMetaPayload(lobby),
-      world: { blocks: WORLD.blocks, spacing: WORLD.spacing },
-      npc: npcPayload(lobby),
-    });
+
+    for (const p of lobby.players.values()) {
+      p.state = spawnState(lobby);
+    }
+    io.to(lobby.id).emit('gameStart', gameStartPayload(lobby));
   });
 
   // ---- Player input / state (client-side physics, server relays) -------
@@ -541,7 +618,7 @@ io.on('connection', (socket) => {
     const lim = WORLD.half + 60;
     p.state = {
       x: clampNum(s.x, -lim, lim),
-      y: clampNum(s.y || 0, -5, 30),
+      y: clampNum(s.y || 0, -40, 400),
       z: clampNum(s.z, -lim, lim),
       heading: Number(s.heading) || 0,
       speed: clampNum(s.speed || 0, -60, 120),
@@ -565,6 +642,60 @@ io.on('connection', (socket) => {
     const text = (data && data.text ? String(data.text) : '').slice(0, 160);
     if (!text.trim()) return;
     io.to(lobby.id).emit('chatMessage', { id: socket.id, name: p.name, text });
+  });
+
+  // ---- Race progress (client reports checkpoint/lap; server ranks) -----
+  socket.on('raceProgress', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || !lobby.race) return;
+    const st = lobby.race.standings[socket.id];
+    if (!st || st.finished) return;
+    if (d) {
+      st.lap = clampInt(d.lap, 0, 99, st.lap);
+      st.cp = clampInt(d.cp, 0, 99, st.cp);
+      if (d.finished) {
+        st.finished = true;
+        st.place = ++lobby.race.finishers;
+        st.finishMs = Date.now() - lobby.race.startAt;
+        const reward = Math.max(50, 400 - (st.place - 1) * 100); // 1st=400, 2nd=300...
+        io.to(lobby.id).emit('raceFinished', {
+          id: socket.id,
+          name: lobby.players.get(socket.id) ? lobby.players.get(socket.id).name : '',
+          place: st.place,
+          ms: st.finishMs,
+          reward,
+        });
+      }
+    }
+  });
+
+  // ---- Admin / cheat commands (host only, cheats must be enabled) ------
+  socket.on('adminCommand', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || lobby.hostId !== socket.id || !lobby.cheats || !d) return;
+    const hostName = lobby.players.get(socket.id) ? lobby.players.get(socket.id).name : 'Host';
+    if (d.cmd === 'kick' && d.targetId && lobby.players.has(d.targetId) && d.targetId !== socket.id) {
+      io.to(d.targetId).emit('kicked', { reason: 'Kicked by host' });
+      const ts = io.sockets.sockets.get(d.targetId);
+      if (ts) handleLeave(ts);
+      return;
+    }
+    const actions = ['trap', 'untrap', 'fly', 'heal', 'boost', 'bringToMe', 'control', 'release'];
+    if (actions.includes(d.cmd) && d.targetId && lobby.players.has(d.targetId)) {
+      const host = lobby.players.get(socket.id);
+      io.to(d.targetId).emit('admin', {
+        action: d.cmd,
+        from: hostName,
+        hostPos: d.cmd === 'bringToMe' && host ? host.state : undefined,
+      });
+    }
+  });
+
+  // ---- Control relay: host puppets a target with their own inputs ------
+  socket.on('controlInput', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || lobby.hostId !== socket.id || !lobby.cheats || !d || !d.targetId) return;
+    if (lobby.players.has(d.targetId)) io.to(d.targetId).emit('controlled', d.input || {});
   });
 
   // ---- Leave lobby (back to menu) --------------------------------------
@@ -592,6 +723,7 @@ function handleLeave(socket) {
   io.to(lobbyId).emit('playerLeft', { id: socket.id, name: player ? player.name : '' });
 
   if (lobby.players.size === 0) {
+    if (lobby.persistent) return; // keep the official server alive when empty
     destroyLobby(lobby);
     return;
   }
@@ -608,6 +740,31 @@ function handleLeave(socket) {
 setInterval(() => {
   for (const lobby of lobbies.values()) {
     if (!lobby.started) continue;
+
+    // --- player vs player collisions -> send impulses to both clients ---
+    const active = [...lobby.players.values()].filter((p) => p.state);
+    if (!lobby._coll) lobby._coll = {};
+    const now = Date.now();
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const a = active[i], b = active[j];
+        const dx = a.state.x - b.state.x, dz = a.state.z - b.state.z;
+        const dd = Math.hypot(dx, dz);
+        if (dd >= 4.2 || dd <= 0.001) continue;
+        const nx = dx / dd, nz = dz / dd;
+        const closing = Math.abs(a.state.speed || 0) + Math.abs(b.state.speed || 0);
+        const key = a.id < b.id ? a.id + '|' + b.id : b.id + '|' + a.id;
+        if (closing > 12 && (!lobby._coll[key] || now - lobby._coll[key] > 350)) {
+          lobby._coll[key] = now;
+          const f = Math.min(80, closing);
+          const up = Math.min(8, f * 0.12);
+          const spin = (Math.random() - 0.5) * 0.05 * f;
+          io.to(a.id).emit('collision', { vx: nx * f * 0.55, vz: nz * f * 0.55, up, spin });
+          io.to(b.id).emit('collision', { vx: -nx * f * 0.55, vz: -nz * f * 0.55, up, spin: -spin });
+        }
+      }
+    }
+
     const updates = [];
     for (const p of lobby.players.values()) {
       if (!p.state) continue;
@@ -629,6 +786,22 @@ setInterval(() => {
       });
     }
     io.to(lobby.id).emit('playerUpdate', { players: updates, t: Date.now() });
+
+    // race standings (live positions)
+    if (lobby.race) {
+      const arr = Object.entries(lobby.race.standings).map(([id, s]) => ({
+        id, lap: s.lap, cp: s.cp, finished: s.finished, place: s.place, ms: s.finishMs,
+        name: lobby.players.get(id) ? lobby.players.get(id).name : '?',
+      }));
+      arr.sort((p, q) => {
+        if (p.finished && q.finished) return p.place - q.place;
+        if (p.finished) return -1;
+        if (q.finished) return 1;
+        return (q.lap * 100 + q.cp) - (p.lap * 100 + p.cp);
+      });
+      arr.forEach((p, i) => { p.pos = i + 1; });
+      io.to(lobby.id).emit('raceStandings', arr);
+    }
   }
 }, 1000 / TICK_HZ);
 
@@ -647,6 +820,15 @@ function makePlayer(id, name, data) {
   };
 }
 
+// Spawn point spread along the start road; small random offset so late
+// joiners don't all stack on the same spot.
+function spawnState(lobby) {
+  const idx = lobby.players.size;
+  const sx = WORLD.line(1) + (idx % 8) * 6 + (Math.random() - 0.5) * 3;
+  const sz = WORLD.line(1) + 4 + Math.floor(idx / 8) * 6;
+  return { x: sx, y: 0, z: sz, heading: 0, speed: 0, braking: false, nitro: false, damage: 0 };
+}
+
 function clampInt(v, min, max, def) {
   v = parseInt(v, 10);
   if (Number.isNaN(v)) return def;
@@ -659,7 +841,41 @@ function clampNum(v, min, max) {
 }
 
 // ---------------------------------------------------------------------
+// Persistent official public server — always online, up to 32 players,
+// open-world running 24/7 so anyone can drop in any time.
+// ---------------------------------------------------------------------
+function createPersistentLobby() {
+  const id = 'official-open-world';
+  const code = 'PUBLIC';
+  const lobby = {
+    id, code,
+    name: '🌍 Official Open World',
+    hostId: 'server',
+    hostName: 'Server',
+    isPublic: true,
+    persistent: true,
+    maxPlayers: 32,
+    worldSize: 'medium',
+    trafficDensity: 'high',
+    timeOfDay: 'day',
+    weather: 'clear',
+    mode: 'open',
+    cheats: false,
+    mapSeed: (Math.random() * 1e9) | 0,
+    race: null,
+    started: true,
+    players: new Map(),
+    npcs: [], peds: [],
+    loopHandle: null,
+  };
+  lobbies.set(id, lobby);
+  codeToLobby.set(code, id);
+  startLobbyLoop(lobby);
+  console.log('Persistent public lobby running:', lobby.name);
+}
+
 server.listen(PORT, () => {
   console.log(`3D Car Simulator server listening on port ${PORT}`);
   console.log(`CORS strict mode: ${STRICT_CORS}`);
+  createPersistentLobby();
 });
