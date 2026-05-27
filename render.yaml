@@ -1,0 +1,21 @@
+# Render.com deployment config for the car simulator backend.
+# Deploy: push this repo to GitHub, then on render.com choose
+# "New +" -> "Blueprint" and point it at the repo. Render reads this file.
+services:
+  - type: web
+    name: car-simulator-server
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 18.20.4
+      - key: STRICT_CORS
+        value: "false"
+      # After deploying the frontend, lock CORS down by setting STRICT_CORS=true
+      # and providing your GitHub Pages origin(s) here (comma-separated):
+      - key: ALLOWED_ORIGINS
+        value: "https://your-username.github.io"
