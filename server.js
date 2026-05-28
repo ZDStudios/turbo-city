@@ -245,6 +245,8 @@ function spawnNpcs(lobby) {
       honk: 0,
       stopped: false,
       knockVx: 0, knockVz: 0, knockSpin: 0, spin: 0,
+      // tumble: roll = around forward axis, pitch = around side axis
+      roll: 0, pitch: 0, rollVel: 0, pitchVel: 0,
     });
   }
   return npcs;
@@ -341,7 +343,7 @@ function stepNpcs(lobby) {
       n.seg = (n.seg + 1) % path.length;
     }
 
-    // --- ramming: players knock NPCs around ---
+    // --- ramming: players knock NPCs around and tumble them ---
     for (const p of lobby.players.values()) {
       if (!p.state) continue;
       const dx = n.x - p.state.x, dz = n.z - p.state.z;
@@ -350,13 +352,15 @@ function stepNpcs(lobby) {
         const nx = dx / dd, nz = dz / dd;
         const ps = Math.abs(p.state.speed || 0);
         if (ps > 10) {
-          const f = Math.min(70, ps);
-          n.knockVx += nx * f * 0.7;
-          n.knockVz += nz * f * 0.7;
-          n.vy = Math.max(n.vy, Math.min(9, f * 0.2));
-          n.knockSpin += (Math.random() - 0.5) * 7;
+          const f = Math.min(90, ps);
+          n.knockVx += nx * f * 1.0;
+          n.knockVz += nz * f * 1.0;
+          n.vy = Math.max(n.vy, Math.min(16, f * 0.28));
+          n.knockSpin += (Math.random() - 0.5) * 8;
+          // tip them over: side hits roll, head-on hits pitch
+          n.rollVel  += (Math.random() - 0.5) * 7;
+          n.pitchVel += (Math.random() - 0.5) * 5;
         } else {
-          // gentle separation at low speed so cars don't overlap
           n.x += nx * (4.2 - dd);
           n.z += nz * (4.2 - dd);
         }
@@ -368,6 +372,12 @@ function stepNpcs(lobby) {
     n.y += n.vy * DT;
     if (n.y > 0) n.vy -= 26 * DT; else { n.y = 0; n.vy = 0; }
     n.spin += n.knockSpin * DT; n.knockSpin *= 0.92;
+    // integrate roll/pitch (tumble) — NPCs land tipped then slowly right themselves
+    n.roll  += n.rollVel  * DT;
+    n.pitch += n.pitchVel * DT;
+    n.rollVel  *= 0.94;
+    n.pitchVel *= 0.94;
+    if (n.y <= 0.05) { n.roll *= 0.965; n.pitch *= 0.965; }
 
     if (n.honk > 0) n.honk = Math.max(0, n.honk - DT);
   }
@@ -394,6 +404,8 @@ function npcPayload(lobby) {
       z: +n.z.toFixed(2),
       y: +(n.y || 0).toFixed(2),
       h: +(n.heading + (n.spin || 0)).toFixed(3),
+      r: +(n.roll || 0).toFixed(3),
+      p: +(n.pitch || 0).toFixed(3),
       s: +n.speed.toFixed(1),
       c: n.color,
       honk: n.honk > 0 ? 1 : 0,
@@ -670,8 +682,39 @@ io.on('connection', (socket) => {
     if (!lobby || !d || !d.targetId) return;
     if (!lobby.players.has(d.targetId)) return;
     const shooter = lobby.players.get(socket.id);
+    const target = lobby.players.get(d.targetId);
     const dmg = clampNum(d.dmg, 0, 40);
     io.to(d.targetId).emit('damaged', { from: socket.id, fromName: shooter ? shooter.name : '?', dmg });
+    // also blast them — a hit sends them flying away from the shooter
+    if (shooter && shooter.state && target && target.state) {
+      const dx = target.state.x - shooter.state.x;
+      const dz = target.state.z - shooter.state.z;
+      const dd = Math.hypot(dx, dz) || 1;
+      const nx = dx/dd, nz = dz/dd;
+      const f = 70 + dmg * 5;
+      io.to(d.targetId).emit('collision', {
+        vx: nx * f * 0.9, vz: nz * f * 0.9,
+        up: 14, spin: (Math.random() - 0.5) * 6,
+      });
+    }
+  });
+
+  // ---- Shoot an NPC car: server applies a huge knock + tumble -----------
+  socket.on('hitNpc', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || !d || !d.id) return;
+    const n = lobby.npcs.find((o) => o.id === d.id);
+    if (!n) return;
+    const dx = Number(d.dx) || 0, dz = Number(d.dz) || 0;
+    const dl = Math.hypot(dx, dz) || 1;
+    const nx = dx/dl, nz = dz/dl;
+    const f = 90 + clampNum(d.dmg, 0, 40) * 4;
+    n.knockVx += nx * f * 1.1;
+    n.knockVz += nz * f * 1.1;
+    n.vy = Math.max(n.vy, 16);
+    n.knockSpin += (Math.random() - 0.5) * 10;
+    n.rollVel  += (Math.random() - 0.5) * 9;
+    n.pitchVel += (Math.random() - 0.5) * 6;
   });
 
   socket.on('iDied', (d) => {
@@ -733,6 +776,45 @@ io.on('connection', (socket) => {
       io.to(d.targetId).emit('kicked', { reason: 'Kicked by host' });
       const ts = io.sockets.sockets.get(d.targetId);
       if (ts) handleLeave(ts);
+      return;
+    }
+    // ---- MISSILE: spectacular admin-only kill that everyone sees ----
+    if (d.cmd === 'missile' && d.targetId && lobby.players.has(d.targetId)) {
+      const host = lobby.players.get(socket.id);
+      const target = lobby.players.get(d.targetId);
+      if (!target || !target.state) return;
+      // origin: just above the host (or sky if host has no state yet)
+      const ox = host && host.state ? host.state.x : target.state.x;
+      const oz = host && host.state ? host.state.z : target.state.z;
+      const oy = (host && host.state ? host.state.y : 0) + 40;
+      const flightMs = 1600;          // ~1.6s of arcing flight everyone watches
+      io.to(lobby.id).emit('missile', {
+        from: socket.id,
+        fromName: hostName,
+        targetId: d.targetId,
+        targetName: target.name,
+        ox, oy, oz,
+        flightMs,
+        t: Date.now(),
+      });
+      // also reset the target's account once the missile lands (delayed so the
+      // explosion fires AT the same moment the visual hits, not before).
+      setTimeout(() => {
+        if (!lobbies.has(lobby.id)) return;
+        if (!lobby.players.has(d.targetId)) return;
+        io.to(d.targetId).emit('resetAccount', { reason: 'missile', from: hostName });
+        io.to(lobby.id).emit('killFeed', {
+          killerId: socket.id,
+          killer: hostName + ' 🚀',
+          victim: target.name,
+        });
+      }, flightMs);
+      return;
+    }
+    // ---- RESET: wipe target's coins/upgrades/turret to a fresh account ----
+    if (d.cmd === 'reset' && d.targetId && lobby.players.has(d.targetId)) {
+      const target = lobby.players.get(d.targetId);
+      io.to(d.targetId).emit('resetAccount', { reason: 'admin', from: hostName });
       return;
     }
     const actions = ['trap', 'untrap', 'fly', 'heal', 'boost', 'bringToMe', 'control', 'release'];
