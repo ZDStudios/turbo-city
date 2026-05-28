@@ -443,6 +443,21 @@ function loadAccount() {
 const account = loadAccount();
 function saveAccount() { try { localStorage.setItem('turbocity_account', JSON.stringify(account)); } catch (e) {} }
 function addCoins(n) { account.coins += n; }
+// Wipe coins, upgrades, turret — same as a brand-new player. Used by the
+// admin "Reset" command AND triggered automatically when a missile hits you.
+function resetAccount() {
+  account.coins = 0;
+  account.turret = false;
+  account.upgrades = { topSpeed:0, accel:0, handling:0, brake:0, nitro:0 };
+  saveAccount();
+  updateCoinsUI();
+  // also reset the active session: car, color, kills
+  player.kills = 0;
+  player.health = 100;
+  player.damage = 0;
+  player.carType = 'sports';
+  player.color = CAR_TYPES.sports.color;
+}
 // car stats with upgrades applied (used by physics + HUD)
 function effectiveStats() {
   const b = CAR_TYPES[player.carType] || CAR_TYPES.sports;
@@ -665,6 +680,10 @@ const ramps = [];         // collision handled via height test
 let skidMarks, smokePool = [], smokeIdx = 0;
 let exhaustPool = [], exhaustIdx = 0;
 let tracerPool = [], tracerIdx = 0;
+let firePool = [], fireIdx = 0;          // bright orange explosion sparks
+let shockPool = [], shockIdx = 0;        // expanding ground shockwave rings
+const activeMissiles = [];               // {mesh, trailIdx, fromPos, toId, t0, dur}
+const bouncePads = [];                   // {pos, mesh, cooldown}
 
 // audio
 let audioCtx = null, engineOsc = null, engineGain = null;
@@ -768,7 +787,7 @@ function buildWorld(seed) {
   // tear down previous map
   if (worldGroup) { scene.remove(worldGroup); }
   worldGroup = new THREE.Group(); scene.add(worldGroup);
-  buildingBoxes.length = 0; boostPads.length = 0; ramps.length = 0;
+  buildingBoxes.length = 0; boostPads.length = 0; ramps.length = 0; bouncePads.length = 0;
   mapRng = makeRng(((seed == null ? 1 : seed) | 0) >>> 0);
   const R = mapRng;
 
@@ -800,7 +819,11 @@ function buildWorld(seed) {
   }
 
   // sidewalks + buildings + trees in each block (randomized by seed)
+  // every block gets ONE of several "district" flavors so the map is varied.
   const sideMat = new THREE.MeshStandardMaterial({ color:0x9aa0a8, roughness:1 });
+  // pick exactly-one "landmark" district (stadium) — placed somewhere central
+  const stadiumI = 2 + Math.floor(R()*(B-3));
+  const stadiumJ = 2 + Math.floor(R()*(B-3));
   for (let i=0; i<B; i++) {
     for (let j=0; j<B; j++) {
       const cx = (line(i)+line(i+1))/2;
@@ -810,16 +833,44 @@ function buildWorld(seed) {
       const sw = new THREE.Mesh(new THREE.BoxGeometry(blockSize, 0.3, blockSize), sideMat);
       sw.position.set(cx, 0.06, cz); sw.receiveShadow = true; worldGroup.add(sw);
 
-      const isPark = R() < 0.22;   // ~1 in 5 blocks is a park
-      if (isPark) {
+      // pick a district type (seeded). stadium is fixed at one block.
+      let kind;
+      if (i === stadiumI && j === stadiumJ) kind = 'stadium';
+      else {
+        const r = R();
+        if (r < 0.16) kind = 'park';
+        else if (r < 0.30) kind = 'suburb';
+        else if (r < 0.40) kind = 'garage';
+        else if (r < 0.48) kind = 'plaza';
+        else if (r < 0.55) kind = 'gas';
+        else kind = 'downtown';
+      }
+
+      if (kind === 'park') {
         const nT = 4 + Math.floor(R()*5);
-        for (let t=0; t<nT; t++) {
-          addTree(cx + (R()-0.5)*blockSize*0.8, cz + (R()-0.5)*blockSize*0.8);
+        for (let t=0; t<nT; t++) addTree(cx + (R()-0.5)*blockSize*0.8, cz + (R()-0.5)*blockSize*0.8);
+        // ~half of parks get a fountain centerpiece
+        if (R() < 0.5) addFountain(cx, cz);
+      } else if (kind === 'suburb') {
+        // 4 small houses arranged in a 2x2 with driveways
+        const ofs = blockSize*0.25;
+        for (const [hx, hz] of [[-ofs,-ofs],[ofs,-ofs],[-ofs,ofs],[ofs,ofs]]) {
+          addHouse(cx+hx, cz+hz, R);
         }
+        if (R() < 0.4) addTree(cx, cz);
+      } else if (kind === 'garage') {
+        addParkingGarage(cx, cz, R);
+      } else if (kind === 'plaza') {
+        addPlaza(cx, cz, R);
+      } else if (kind === 'gas') {
+        addGasStation(cx, cz, R);
+      } else if (kind === 'stadium') {
+        addStadium(cx, cz);
       } else {
+        // downtown: a few tall towers
         const n = 1 + Math.floor(R()*3);
         for (let k=0; k<n; k++) {
-          const bw = 8 + R()*14, bd = 8 + R()*14, bh = 10 + R()*46;
+          const bw = 8 + R()*14, bd = 8 + R()*14, bh = 12 + R()*54;
           const bx = cx + (R()-0.5)*(blockSize-bw-4);
           const bz = cz + (R()-0.5)*(blockSize-bd-4);
           addBuilding(bx, bz, bw, bd, bh);
@@ -832,7 +883,9 @@ function buildWorld(seed) {
   buildHighwayLoop();
   buildTunnel();
   buildBoostPads(R);
+  buildBouncePads(R);
   buildRamps(R);
+  buildBillboards(R);
   buildSkidLayer();
 }
 
@@ -866,6 +919,222 @@ function addTree(x, z) {
   g.add(trunk); g.add(foliage); g.position.set(x,0,z);
   worldGroup.add(g);
   buildingBoxes.push({ minX:x-0.6, maxX:x+0.6, minZ:z-0.6, maxZ:z+0.6, top:4 });
+}
+
+/* small suburban house: rectangular base + triangular peaked roof + door */
+function addHouse(x, z, R) {
+  R = R || mapRng;
+  const w = 8 + R()*4, d = 8 + R()*4, h = 4 + R()*2;
+  const wallCol = new THREE.Color().setHSL(0.08 + R()*0.1, 0.4, 0.55 + R()*0.15);
+  const roofCol = new THREE.Color().setHSL(R()*0.1, 0.6, 0.25 + R()*0.1);
+  const wallMat = new THREE.MeshStandardMaterial({ color: wallCol, roughness:0.8 });
+  const roofMat = new THREE.MeshStandardMaterial({ color: roofCol, roughness:0.8 });
+  // walls
+  const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat);
+  body.position.set(x, h/2, z); body.castShadow = true; body.receiveShadow = true;
+  worldGroup.add(body);
+  // pitched roof made of two slanted boxes
+  const roofH = 2.4;
+  const slope = new THREE.BoxGeometry(w + 1, 0.3, Math.hypot(d/2, roofH) + 0.6);
+  const angle = Math.atan2(roofH, d/2);
+  for (const sign of [-1, 1]) {
+    const r = new THREE.Mesh(slope, roofMat);
+    r.position.set(x, h + roofH/2, z + sign*d/4);
+    r.rotation.x = sign * angle;
+    r.castShadow = true; worldGroup.add(r);
+  }
+  // door
+  const doorMat = new THREE.MeshStandardMaterial({ color:0x4a2a1a, roughness:0.9 });
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1, 2, 0.1), doorMat);
+  door.position.set(x, 1, z + d/2 + 0.06); worldGroup.add(door);
+  // a couple of glowing windows
+  const winMat = new THREE.MeshStandardMaterial({ color:0x335577, emissive:0xffdd88, emissiveIntensity:0 });
+  body.userData.winMat = winMat;
+  for (const [sx, sz, sy] of [[-w*0.3, d/2+0.06, h*0.55], [w*0.3, d/2+0.06, h*0.55], [-w/2-0.06, 0, h*0.55], [w/2+0.06, 0, h*0.55]]) {
+    const win = new THREE.Mesh(new THREE.BoxGeometry(sz>=d/2?1.2:0.1, 1, sz>=d/2?0.05:1.2), winMat);
+    win.position.set(x+sx, sy, z+sz); worldGroup.add(win);
+  }
+  buildingBoxes.push({ minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2, top:h });
+}
+
+/* fountain centerpiece for parks/plazas */
+function addFountain(x, z) {
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(4, 4.5, 0.5, 16),
+    new THREE.MeshStandardMaterial({ color:0xbbbbcc, roughness:0.6 }));
+  base.position.set(x, 0.25, z); base.receiveShadow = true; worldGroup.add(base);
+  const water = new THREE.Mesh(new THREE.CylinderGeometry(3.6, 3.6, 0.3, 16),
+    new THREE.MeshStandardMaterial({ color:0x3aaadd, emissive:0x1a4a6a, emissiveIntensity:0.4, roughness:0.2, metalness:0.1 }));
+  water.position.set(x, 0.45, z); worldGroup.add(water);
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.8, 2.4, 10),
+    new THREE.MeshStandardMaterial({ color:0xcccccc }));
+  pillar.position.set(x, 1.5, z); worldGroup.add(pillar);
+  buildingBoxes.push({ minX:x-4.5, maxX:x+4.5, minZ:z-4.5, maxZ:z+4.5, top:2 });
+}
+
+/* plaza: paved square with benches + a fountain or statue */
+function addPlaza(x, z, R) {
+  const paveMat = new THREE.MeshStandardMaterial({ color:0xc8c0a8, roughness:0.9 });
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(40, 0.2, 40), paveMat);
+  slab.position.set(x, 0.18, z); slab.receiveShadow = true; worldGroup.add(slab);
+  if (R() < 0.5) addFountain(x, z);
+  else {
+    // statue: a pedestal + tall pillar with a sphere top
+    const ped = new THREE.Mesh(new THREE.BoxGeometry(3, 1.5, 3),
+      new THREE.MeshStandardMaterial({ color:0x888888 }));
+    ped.position.set(x, 0.75, z); worldGroup.add(ped);
+    const fig = new THREE.Mesh(new THREE.SphereGeometry(1.2, 12, 10),
+      new THREE.MeshStandardMaterial({ color:0xddaa44, metalness:0.6, roughness:0.4 }));
+    fig.position.set(x, 3, z); worldGroup.add(fig);
+    buildingBoxes.push({ minX:x-1.5, maxX:x+1.5, minZ:z-1.5, maxZ:z+1.5, top:4 });
+  }
+  // benches around the edge
+  const benchMat = new THREE.MeshStandardMaterial({ color:0x4a3020, roughness:0.9 });
+  for (const [bx, bz] of [[-14, 0], [14, 0], [0, -14], [0, 14]]) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(bx===0?3:0.6, 0.6, bz===0?3:0.6), benchMat);
+    b.position.set(x+bx, 0.5, z+bz); worldGroup.add(b);
+  }
+}
+
+/* gas station: canopy roof + pumps + small shop */
+function addGasStation(x, z, R) {
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(28, 0.2, 22),
+    new THREE.MeshStandardMaterial({ color:0x3a3a40, roughness:0.9 }));
+  slab.position.set(x, 0.18, z); slab.receiveShadow = true; worldGroup.add(slab);
+  // canopy on 4 pillars
+  const canopy = new THREE.Mesh(new THREE.BoxGeometry(16, 0.6, 10),
+    new THREE.MeshStandardMaterial({ color:0xff7733, roughness:0.6 }));
+  canopy.position.set(x, 5, z-2); canopy.castShadow = true; worldGroup.add(canopy);
+  const pillarMat = new THREE.MeshStandardMaterial({ color:0xeeeeee });
+  for (const [px, pz] of [[-7,-6], [7,-6], [-7,2], [7,2]]) {
+    const p = new THREE.Mesh(new THREE.BoxGeometry(0.6, 5, 0.6), pillarMat);
+    p.position.set(x+px, 2.5, z+pz); worldGroup.add(p);
+  }
+  // pumps (you can hit them — they're collision boxes)
+  for (const [px, pz] of [[-4,-2], [4,-2]]) {
+    const pump = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.8, 0.8),
+      new THREE.MeshStandardMaterial({ color:0xdd2222, emissive:0x441111 }));
+    pump.position.set(x+px, 0.9, z+pz); pump.castShadow = true; worldGroup.add(pump);
+    buildingBoxes.push({ minX:x+px-0.7, maxX:x+px+0.7, minZ:z+pz-0.5, maxZ:z+pz+0.5, top:2 });
+  }
+  // shop
+  const shopMat = new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.8 });
+  const shop = new THREE.Mesh(new THREE.BoxGeometry(10, 4, 6), shopMat);
+  shop.position.set(x, 2, z+7); shop.castShadow = true; worldGroup.add(shop);
+  const winMat = new THREE.MeshStandardMaterial({ color:0x335577, emissive:0xffdd88, emissiveIntensity:0 });
+  shop.userData.winMat = winMat;
+  buildingBoxes.push({ minX:x-5, maxX:x+5, minZ:z+4, maxZ:z+10, top:4 });
+}
+
+/* stadium: oval-ish bowl made of stacked tilted boxes — landmark */
+function addStadium(x, z) {
+  // field
+  const field = new THREE.Mesh(new THREE.CircleGeometry(22, 32),
+    new THREE.MeshStandardMaterial({ color:0x2e7d32, roughness:1 }));
+  field.rotation.x = -Math.PI/2; field.position.set(x, 0.2, z); worldGroup.add(field);
+  // stands ring
+  const standMat = new THREE.MeshStandardMaterial({ color:0xaaaab0, roughness:0.9 });
+  const seg = 24;
+  for (let i=0; i<seg; i++) {
+    const ang = (i/seg)*Math.PI*2;
+    const rx = Math.cos(ang)*30, rz = Math.sin(ang)*30;
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(9, 9, 6), standMat);
+    wall.position.set(x+rx, 4.5, z+rz); wall.rotation.y = -ang; wall.castShadow = true; worldGroup.add(wall);
+    buildingBoxes.push({ minX:x+rx-4, maxX:x+rx+4, minZ:z+rz-3, maxZ:z+rz+3, top:9 });
+  }
+  // 4 floodlight pylons
+  for (const ang of [Math.PI/4, 3*Math.PI/4, 5*Math.PI/4, 7*Math.PI/4]) {
+    const px = x + Math.cos(ang)*34, pz = z + Math.sin(ang)*34;
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.6, 22, 8),
+      new THREE.MeshStandardMaterial({ color:0x444444 }));
+    pole.position.set(px, 11, pz); worldGroup.add(pole);
+    const light = new THREE.Mesh(new THREE.BoxGeometry(2.5, 1.5, 0.8),
+      new THREE.MeshStandardMaterial({ color:0xffffaa, emissive:0xffffaa, emissiveIntensity:1 }));
+    light.position.set(px, 22, pz); worldGroup.add(light);
+  }
+}
+
+/* drivable parking garage: 4 stacked floors connected by a spiraling ramp.
+   Walls are collision boxes on the perimeter; the interior is wide-open so
+   you can drive in, spiral up to the top, and drive off. */
+function addParkingGarage(x, z, R) {
+  R = R || mapRng;
+  const floors = 4;
+  const floorH = 4.5;
+  const W = 32, D = 32, wallT = 1, openSide = 'south'; // south = +Z entrance
+  const concrete = new THREE.MeshStandardMaterial({ color:0x8a8a90, roughness:0.95 });
+  const railMat  = new THREE.MeshStandardMaterial({ color:0xcccccc, roughness:0.7 });
+  for (let f=0; f<floors; f++) {
+    const y = f * floorH;
+    // floor slab — this is a drivable surface (registered as a building-roof box)
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(W, 0.4, D), concrete);
+    slab.position.set(x, y + 0.2, z); slab.receiveShadow = true; slab.castShadow = true;
+    worldGroup.add(slab);
+    if (f > 0) {
+      // each floor counts as a roof you can land/drive on
+      buildingBoxes.push({ minX:x-W/2, maxX:x+W/2, minZ:z-D/2, maxZ:z+D/2, top:y + 0.4 });
+    }
+    // short outer railings on 3 sides (the south side is the open entrance/exit)
+    const rH = 0.9;
+    const sides = [
+      { dx:0,  dz:-D/2, sx:W,    sz:wallT },   // north wall (high — closed)
+      { dx:-W/2, dz:0,  sx:wallT, sz:D },      // west rail
+      { dx: W/2, dz:0,  sx:wallT, sz:D },      // east rail
+    ];
+    for (const s of sides) {
+      const isFull = s.dz === -D/2 && f < floors-1; // closed north wall on lower floors
+      const h = isFull ? floorH : rH;
+      const m = new THREE.Mesh(new THREE.BoxGeometry(s.sx, h, s.sz), isFull ? concrete : railMat);
+      m.position.set(x + s.dx, y + h/2 + 0.4, z + s.dz);
+      m.castShadow = true; worldGroup.add(m);
+      // collision for the full walls
+      if (isFull) buildingBoxes.push({ minX:x+s.dx-s.sx/2, maxX:x+s.dx+s.sx/2, minZ:z+s.dz-s.sz/2, maxZ:z+s.dz+s.sz/2, top:y+h+0.4 });
+    }
+    // ramp UP to the next floor along the east edge (faces +X side, sloping up toward +Z)
+    if (f < floors-1) {
+      const rampLen = 22, rampW = 6;
+      const ramp = new THREE.Mesh(new THREE.BoxGeometry(rampW, 0.4, rampLen), concrete);
+      const ramAngle = Math.atan2(floorH, rampLen);
+      // alternate ramp side per floor so the spiral wraps around
+      const sideSign = (f % 2 === 0) ? 1 : -1;
+      ramp.rotation.x = -sideSign * ramAngle;
+      ramp.position.set(x + (W/2 - rampW/2 - 0.5), y + floorH/2 + 0.2, z + sideSign * (rampLen/2 - 1));
+      ramp.castShadow = true; ramp.receiveShadow = true; worldGroup.add(ramp);
+      // register as a soft "ramp" so cars can drive up it
+      ramps.push({ x: ramp.position.x, z: ramp.position.z, rot: 0, halfX: rampW/2, halfZ: rampLen/2, baseY: y, topY: y + floorH });
+    }
+    // some interior pillars for flavour (small collision)
+    for (const [px, pz] of [[-W/3, -D/3], [W/3, -D/3], [-W/3, D/3], [W/3, D/3]]) {
+      const pil = new THREE.Mesh(new THREE.BoxGeometry(1, floorH, 1), concrete);
+      pil.position.set(x+px, y + floorH/2 + 0.2, z+pz); pil.castShadow = true; worldGroup.add(pil);
+      if (f === 0) buildingBoxes.push({ minX:x+px-0.5, maxX:x+px+0.5, minZ:z+pz-0.5, maxZ:z+pz+0.5, top: floors*floorH });
+    }
+  }
+  // big "P" sign on the roof
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 0.3),
+    new THREE.MeshStandardMaterial({ color:0x2266cc, emissive:0x113355, emissiveIntensity:0.8 }));
+  sign.position.set(x, floors*floorH + 2.5, z - D/2); worldGroup.add(sign);
+}
+
+/* tall billboard signs scattered around the map */
+function buildBillboards(R) {
+  R = R || mapRng;
+  const colors = [0xff3366, 0x33aaff, 0xffaa22, 0x44dd66, 0xaa44ff];
+  const slogans = ['TURBO CITY', 'DRIVE', '★ SPEED ★', 'NITRO!', '🏁 RACE', 'CITY 24/7'];
+  const n = 4 + Math.floor(R()*3);
+  for (let k=0; k<n; k++) {
+    const i = 1 + Math.floor(R()*(WORLD.blocks-1));
+    const j = 1 + Math.floor(R()*(WORLD.blocks-1));
+    const x = line(i) + (R()-0.5)*40;
+    const z = line(j) + (R()-0.5)*40;
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.5, 14, 8),
+      new THREE.MeshStandardMaterial({ color:0x555555 }));
+    pole.position.set(x, 7, z); worldGroup.add(pole);
+    const board = new THREE.Mesh(new THREE.BoxGeometry(10, 4, 0.4),
+      new THREE.MeshStandardMaterial({ color: colors[k % colors.length], emissive: colors[k % colors.length], emissiveIntensity:0.4, roughness:0.6 }));
+    board.position.set(x, 14, z);
+    board.rotation.y = R() * Math.PI * 2;
+    board.castShadow = true; worldGroup.add(board);
+  }
 }
 
 /* elevated highway ring just outside the city + support pillars (bridge) */
@@ -924,6 +1193,47 @@ function buildBoostPads(R) {
       ch.position.set(x, 0.14, z - 2.5 + c*2.5); worldGroup.add(ch);
     }
     boostPads.push({ pos:new THREE.Vector3(x,0,z), mesh:pad, cooldown:0 });
+  }
+}
+
+/* bounce pads: bouncy red/white circles that fling you straight up */
+function buildBouncePads(R) {
+  R = R || Math.random;
+  const n = 4 + Math.floor(R()*3);
+  for (let k=0; k<n; k++) {
+    const i = 1 + Math.floor(R()*(WORLD.blocks-1));
+    const j = 1 + Math.floor(R()*(WORLD.blocks-1));
+    const x = line(i) + (R()-0.5)*40;
+    const z = line(j) + (R()-0.5)*40;
+    const g = new THREE.Group();
+    const baseMat = new THREE.MeshStandardMaterial({ color:0xff3366, emissive:0xaa1144, emissiveIntensity:0.6, roughness:0.5 });
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(3, 3.5, 0.6, 24), baseMat);
+    base.position.y = 0.3; g.add(base);
+    // springs (visual only)
+    const springMat = new THREE.MeshStandardMaterial({ color:0xcccccc, metalness:0.8, roughness:0.3 });
+    for (const [sx, sz] of [[-2, -2],[2,-2],[-2,2],[2,2]]) {
+      const sp = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.6, 8), springMat);
+      sp.position.set(sx, 0.3, sz); g.add(sp);
+    }
+    const topMat = new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xffeecc, emissiveIntensity:0.8, roughness:0.5 });
+    const top = new THREE.Mesh(new THREE.CylinderGeometry(2.8, 2.8, 0.25, 24), topMat);
+    top.position.y = 0.85; g.add(top);
+    // arrow indicating "bounce up"
+    const arrowMat = new THREE.MeshBasicMaterial({ color:0xff3366 });
+    const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.8, 1.2, 8), arrowMat);
+    arrow.position.y = 2; g.add(arrow);
+    g.position.set(x, 0, z);
+    worldGroup.add(g);
+    bouncePads.push({ pos:new THREE.Vector3(x, 0, z), mesh:g, top, cooldown:0, anim:0 });
+  }
+}
+function animateBouncePads(dt) {
+  for (const bp of bouncePads) {
+    bp.cooldown = Math.max(0, bp.cooldown - dt);
+    bp.anim = Math.max(0, bp.anim - dt*3);
+    // bounce the top disk when used
+    bp.top.position.y = 0.85 - bp.anim * 0.35;
+    bp.top.material.emissiveIntensity = 0.6 + Math.sin(clock.elapsedTime*5 + bp.pos.x)*0.3;
   }
 }
 
@@ -988,6 +1298,22 @@ function buildParticlePools() {
     t.visible=false; t.userData={life:0};
     scene.add(t); tracerPool.push(t);
   }
+  // explosion fire sparks (additive bright)
+  const fireMat = new THREE.PointsMaterial({ color:0xffaa22, size:2.4, transparent:true, opacity:1, blending:THREE.AdditiveBlending, depthWrite:false });
+  for (let i=0;i<60;i++){
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0],3));
+    const p = new THREE.Points(geo, fireMat.clone());
+    p.visible=false; p.userData={ life:0, vx:0, vy:0, vz:0 };
+    scene.add(p); firePool.push(p);
+  }
+  // shockwave rings (a flat torus that expands + fades)
+  const ringMat = new THREE.MeshBasicMaterial({ color:0xffe066, transparent:true, opacity:0.9, side:THREE.DoubleSide, depthWrite:false });
+  for (let i=0;i<6;i++){
+    const r = new THREE.Mesh(new THREE.RingGeometry(1, 1.4, 32), ringMat.clone());
+    r.rotation.x = -Math.PI/2; r.visible=false; r.userData={ life:0, max:1 };
+    scene.add(r); shockPool.push(r);
+  }
 }
 function spawnTracer(x, y, z, heading) {
   const t = tracerPool[tracerIdx]; tracerIdx=(tracerIdx+1)%tracerPool.length;
@@ -1016,6 +1342,30 @@ function emitExhaust(x,y,z) {
   p.position.set(x,y,z); p.visible=true; p.material.opacity=0.5;
   p.userData = { life:0.6, vy:0.5 };
 }
+function emitFire(x,y,z, spread, life) {
+  const p = firePool[fireIdx]; fireIdx=(fireIdx+1)%firePool.length;
+  p.position.set(x,y,z); p.visible=true; p.material.opacity=1;
+  const s = spread||5;
+  p.userData = { life: life||1.2,
+    vx:(Math.random()-0.5)*s, vy:1.5+Math.random()*s, vz:(Math.random()-0.5)*s };
+  p.scale.setScalar(1);
+}
+function emitShockwave(x,y,z, maxR) {
+  const r = shockPool[shockIdx]; shockIdx=(shockIdx+1)%shockPool.length;
+  r.position.set(x, y+0.1, z); r.visible=true; r.material.opacity=0.9;
+  r.userData = { life:0.8, max: maxR||14 }; r.scale.setScalar(1);
+}
+function bigExplosion(x, y, z) {
+  // many overlapping particle types — smoke, fire, shockwave
+  emitShockwave(x, 0.05, z, 18);
+  emitShockwave(x, 0.05, z, 11);
+  for (let i=0;i<30;i++) emitFire(x + (Math.random()-0.5)*2, y + Math.random()*1.5, z + (Math.random()-0.5)*2, 9, 1.3);
+  for (let i=0;i<24;i++) emitSmoke(x + (Math.random()-0.5)*4, y + Math.random()*4, z + (Math.random()-0.5)*4);
+  // a brief flash light
+  const flash = new THREE.PointLight(0xffcc66, 30, 60, 2);
+  flash.position.set(x, y+2, z); scene.add(flash);
+  setTimeout(()=> scene.remove(flash), 250);
+}
 function updateParticles(dt) {
   for (const p of smokePool) {
     if (!p.visible) continue;
@@ -1031,6 +1381,23 @@ function updateParticles(dt) {
     if (p.userData.life<=0){ p.visible=false; continue; }
     p.position.y += p.userData.vy*dt;
     p.material.opacity = p.userData.life*0.5;
+  }
+  for (const p of firePool) {
+    if (!p.visible) continue;
+    p.userData.life -= dt*1.0;
+    if (p.userData.life<=0){ p.visible=false; continue; }
+    p.position.x += p.userData.vx*dt; p.position.y += p.userData.vy*dt; p.position.z += p.userData.vz*dt;
+    p.userData.vy -= 12*dt; // sparks arc down
+    p.material.opacity = Math.max(0, p.userData.life);
+    p.scale.setScalar(1 + (1-p.userData.life)*1.5);
+  }
+  for (const r of shockPool) {
+    if (!r.visible) continue;
+    r.userData.life -= dt*1.3;
+    if (r.userData.life<=0){ r.visible=false; continue; }
+    const s = (1 - r.userData.life) * r.userData.max;
+    r.scale.set(s, s, s);
+    r.material.opacity = r.userData.life * 0.9;
   }
 }
 
@@ -1240,7 +1607,14 @@ function updatePhysics(dt) {
   let groundY = 0, onRamp = false;
   for (const r of ramps) {
     if (Math.abs(player.pos.x - r.x) < r.halfX && Math.abs(player.pos.z - r.z) < r.halfZ) {
-      groundY = 2.5; onRamp = true;
+      // garage ramps have baseY/topY — interpolate; stunt ramps just lift to 2.5
+      if (r.topY != null && r.baseY != null) {
+        const t = (player.pos.z - (r.z - r.halfZ)) / (r.halfZ * 2);
+        const yLin = r.baseY + (r.topY - r.baseY) * Math.max(0, Math.min(1, t));
+        groundY = Math.max(groundY, yLin + 0.4);
+      } else {
+        groundY = 2.5; onRamp = true;
+      }
     }
   }
   // ramps fling the car upward at speed (fast hits can backflip)
@@ -1347,6 +1721,19 @@ function updatePhysics(dt) {
       player.boostTimer = 3.0; player.nitro = Math.min(1, player.nitro+0.4);
       pad.cooldown = 5;
       showBoostMsg();
+    }
+  }
+  // ---- bounce pads — fling the car straight up (great for stunts) ----
+  for (const bp of bouncePads) {
+    if (bp.cooldown > 0) continue;
+    const dx = player.pos.x - bp.pos.x, dz = player.pos.z - bp.pos.z;
+    if (dx*dx + dz*dz < 9 && player.pos.y < 2) {
+      player._vy = Math.max(player._vy, 36);   // big launch
+      bp.cooldown = 0.8; bp.anim = 1;
+      // a little forward spin for style
+      player.pitchVel += (Math.random()-0.5) * 2;
+      player.rollVel  += (Math.random()-0.5) * 2;
+      bounceSound();
     }
   }
 
@@ -1605,12 +1992,14 @@ function animate() {
     interpolateNpcs(dt);
     updateParticles(dt);
     updateTracers(dt);
+    updateMissiles(dt);
     updateRain(dt);
     applyDayNight(dt);
     updateEngineSound();
     updateHUD(dt);
     updateNameTags();
     animateBoostPads(dt);
+    animateBouncePads(dt);
 
     // send input ~60Hz
     if (performance.now() - lastInputSent > 1000/CONFIG.INPUT_HZ) {
@@ -1689,6 +2078,9 @@ function interpolateNpcs(dt) {
     let dh = (n.target.h + Math.PI) - n.mesh.rotation.y;
     while (dh>Math.PI) dh-=Math.PI*2; while (dh<-Math.PI) dh+=Math.PI*2;
     n.mesh.rotation.y += dh*k;
+    // roll/pitch tumble (so rammed/shot NPCs visibly fall over)
+    n.mesh.rotation.x += ((n.target.p||0) - n.mesh.rotation.x) * k;
+    n.mesh.rotation.z += ((n.target.r||0) - n.mesh.rotation.z) * k;
     for (const w of n.mesh.userData.wheels) w.children.forEach(c=>c.rotation.x += n.target.s*dt*2);
   }
   for (const p of pedMeshes.values()) {
@@ -1953,6 +2345,33 @@ function connect() {
   socket.on('controlled', (inp) => { beingControlled = true; controlInputData = inp || {}; lastControlMs = performance.now(); });
   socket.on('kicked', (d) => { quitToMenu(); menuMsg('You were kicked: ' + (d && d.reason ? d.reason : '')); });
 
+  // ---- ADMIN MISSILE: everyone in the lobby watches it fly + explode ----
+  socket.on('missile', (d) => {
+    if (!gameStarted || !d) return;
+    launchMissile(d.ox, d.oy, d.oz, d.targetId, d.flightMs || 1600);
+    addKillFeed(`🚀 <b style="color:#ff6b6b;">${escapeHtml(d.fromName)}</b> launched a MISSILE at ${escapeHtml(d.targetName)}`);
+  });
+
+  // ---- ADMIN: server reset my account back to fresh-install state ----
+  socket.on('resetAccount', (d) => {
+    resetAccount();
+    if (gameStarted) {
+      // dramatic exit: huge blast, knock my car flying, then full respawn
+      bigExplosion(player.pos.x, player.pos.y + 1, player.pos.z);
+      explosionSound();
+      player._vy = 28;
+      player.rollVel  += (Math.random()-0.5) * 14;
+      player.pitchVel += (Math.random()-0.5) * 10;
+      player.vel.x += (Math.random()-0.5) * 40;
+      player.vel.y += (Math.random()-0.5) * 40;
+      player.health = 0;
+      flashHit();
+      // wait for the explosion to play, then respawn fresh
+      setTimeout(()=>{ if (gameStarted) { respawn(); rebuildSelfMesh(); } }, 900);
+    }
+    addKillFeed(`💀 You were reset${d && d.from ? ' by ' + escapeHtml(d.from) : ''} — coins/upgrades wiped`);
+  });
+
   // ---- combat ----
   socket.on('fire', (d) => { if (gameStarted && d) spawnTracer(d.x, d.y, d.z, d.h); });
   socket.on('damaged', (d) => {
@@ -2069,7 +2488,8 @@ const offlineSim = {
         x:a.x+(bpt.x-a.x)*t, z:a.z+(bpt.z-a.z)*t, y:0,
         heading:Math.atan2(bpt.x-a.x, bpt.z-a.z), speed:0,
         maxSpeed:16+Math.random()*10, color:colors[i%colors.length],
-        knockVx:0, knockVz:0, knockVy:0, spin:0, knockSpin:0 });
+        knockVx:0, knockVz:0, knockVy:0, spin:0, knockSpin:0,
+        roll:0, pitch:0, rollVel:0, pitchVel:0 });
     }
     this.peds = [];
     for (let i=0;i<12;i++){
@@ -2120,10 +2540,15 @@ const offlineSim = {
       if (n.y > 0) n.knockVy -= 26*dt; else { n.y=0; n.knockVy=0; }
       n.knockVx *= (1-Math.min(1,dt*2)); n.knockVz *= (1-Math.min(1,dt*2));
       n.spin += n.knockSpin*dt; n.knockSpin *= (1-Math.min(1,dt*1.5));
+      // integrate roll/pitch tumble so they actually fall over
+      n.roll  += n.rollVel  * dt; n.pitch += n.pitchVel * dt;
+      n.rollVel  *= (1-Math.min(1,dt*1.2));
+      n.pitchVel *= (1-Math.min(1,dt*1.2));
+      if (n.y <= 0.05) { n.roll *= (1-Math.min(1,dt*0.7)); n.pitch *= (1-Math.min(1,dt*0.7)); }
 
       // push render target
       ensureNpc({ id:n.id, c:n.color });
-      npcCars.get(n.id).target = { x:n.x, z:n.z, y:n.y, h:n.heading + n.spin, s:n.speed };
+      npcCars.get(n.id).target = { x:n.x, z:n.z, y:n.y, h:n.heading + n.spin, r:n.roll, p:n.pitch, s:n.speed };
     }
     for (const p of this.peds){
       const target = p.loop[(p.seg+1)%p.loop.length];
@@ -2139,7 +2564,9 @@ const offlineSim = {
     const n = this.npcs.find(o => o.id === id);
     if (!n) return;
     n.knockVx += vx; n.knockVz += vz; n.knockVy += Math.max(0, vy);
-    n.knockSpin += (Math.random()-0.5) * 7;
+    n.knockSpin += (Math.random()-0.5) * 8;
+    n.rollVel  += (Math.random()-0.5) * 7;
+    n.pitchVel += (Math.random()-0.5) * 5;
   },
 
   stop() { this.running = false; },
@@ -2356,6 +2783,8 @@ function renderAdmin() {
     const nm = document.createElement('span'); nm.style.cssText='flex:1 0 100%;font-weight:700;margin-bottom:4px;'; nm.textContent = p.name;
     row.appendChild(nm);
     const mk = (label, cmd, cls)=>{ const b=document.createElement('button'); b.className='admin-btn'+(cls?' '+cls:''); b.textContent=label; b.onclick=()=>adminCmd(cmd, p.id); return b; };
+    row.appendChild(mk('🚀 Missile','missile','danger'));
+    row.appendChild(mk('🔄 Reset','reset','danger'));
     row.appendChild(mk('Kick','kick','danger'));
     row.appendChild(mk('Trap','trap'));
     row.appendChild(mk('Free','untrap'));
@@ -2402,23 +2831,137 @@ function fire() {
   };
   if (offlineMode) {
     const id = pickInCone(npcCars, n=>n.target);
-    if (id) offlineSim.knock(id, dirx*45, dirz*45, 6);
-  } else {
-    const id = pickInCone(remotePlayers, r=>r.target);
-    if (id && connected) {
-      socket.emit('hitPlayer', { targetId:id, dmg:12 });
-      const r = remotePlayers.get(id);
-      if (r) emitSmoke(r.mesh.position.x, r.mesh.position.y+1, r.mesh.position.z);
+    if (id) offlineSim.knock(id, dirx*45, dirz*45, 12);
+  } else if (connected) {
+    // pick the closest hit between remote players and NPC traffic
+    const pid = pickInCone(remotePlayers, r=>r.target);
+    const nid = pickInCone(npcCars, n=>n.target);
+    let bestId=null, bestKind=null, bd=1e9;
+    if (pid) { const t=remotePlayers.get(pid).target; const d=Math.hypot(t.x-ox, t.z-oz); if (d<bd){ bd=d; bestId=pid; bestKind='p'; } }
+    if (nid) { const t=npcCars.get(nid).target;       const d=Math.hypot(t.x-ox, t.z-oz); if (d<bd){ bd=d; bestId=nid; bestKind='n'; } }
+    if (bestKind === 'p') {
+      socket.emit('hitPlayer', { targetId:bestId, dmg:12 });
+      const r = remotePlayers.get(bestId); if (r) emitSmoke(r.mesh.position.x, r.mesh.position.y+1, r.mesh.position.z);
+    } else if (bestKind === 'n') {
+      socket.emit('hitNpc', { id:bestId, dmg:12, dx:dirx, dz:dirz });
+      const t = npcCars.get(bestId).target; emitSmoke(t.x, (t.y||0)+1, t.z);
     }
   }
 }
 function explode(x, y, z) {
-  for (let i=0;i<18;i++) emitSmoke(x + (Math.random()-0.5)*3, y + Math.random()*2.5, z + (Math.random()-0.5)*3);
+  // upgraded: a real bang, not just smoke
+  bigExplosion(x, y, z);
+  explosionSound();
+}
+
+/* ---------- MISSILE (admin) ---------- */
+function buildMissileMesh() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 2.6, 12),
+    new THREE.MeshStandardMaterial({ color:0xdddddd, metalness:0.5, roughness:0.4, emissive:0x333333 }));
+  body.rotation.x = Math.PI/2; g.add(body);
+  // nose cone
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.35, 0.9, 10),
+    new THREE.MeshStandardMaterial({ color:0xff4444, emissive:0xff2200, emissiveIntensity:0.6 }));
+  nose.rotation.x = -Math.PI/2; nose.position.z = -1.6; g.add(nose);
+  // fins
+  const finMat = new THREE.MeshStandardMaterial({ color:0x444444 });
+  for (let i=0;i<4;i++){
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.7, 0.7), finMat);
+    fin.position.set(0,0,1.1); fin.rotation.z = i*Math.PI/2;
+    fin.position.y = Math.cos(i*Math.PI/2)*0.4;
+    fin.position.x = Math.sin(i*Math.PI/2)*0.4;
+    g.add(fin);
+  }
+  // engine glow
+  const glow = new THREE.PointLight(0xff8822, 4, 12, 2);
+  glow.position.set(0,0,1.3); g.add(glow);
+  return g;
+}
+
+function launchMissile(ox, oy, oz, targetId, dur) {
+  const mesh = buildMissileMesh();
+  scene.add(mesh);
+  mesh.position.set(ox, oy, oz);
+  activeMissiles.push({ mesh, fromPos: new THREE.Vector3(ox, oy, oz), toId: targetId, t0: performance.now(), dur });
+  missileSound();
+}
+
+function getMissileTargetPos(toId) {
+  if (toId === selfId) return new THREE.Vector3(player.pos.x, player.pos.y + 0.6, player.pos.z);
+  const r = remotePlayers.get(toId);
+  if (r) return new THREE.Vector3(r.mesh.position.x, r.mesh.position.y + 0.6, r.mesh.position.z);
+  return null;
+}
+
+function updateMissiles(dt) {
+  for (let i = activeMissiles.length-1; i >= 0; i--) {
+    const m = activeMissiles[i];
+    const tp = getMissileTargetPos(m.toId);
+    if (!tp) { scene.remove(m.mesh); activeMissiles.splice(i,1); continue; }
+    const elapsed = performance.now() - m.t0;
+    const u = Math.min(1, elapsed / m.dur);
+    // smooth arc: lerp x/z, add a parabolic hump on y
+    const x = m.fromPos.x + (tp.x - m.fromPos.x) * u;
+    const z = m.fromPos.z + (tp.z - m.fromPos.z) * u;
+    const yBase = m.fromPos.y + (tp.y - m.fromPos.y) * u;
+    const hump = Math.sin(u * Math.PI) * 22; // tall arc
+    m.mesh.position.set(x, yBase + hump, z);
+    // face direction of travel
+    const dx = tp.x - x, dz = tp.z - z;
+    m.mesh.rotation.y = Math.atan2(dx, dz);
+    m.mesh.rotation.x = -Math.atan2(hump - (Math.sin((u-0.01)*Math.PI)*22), 1) - 0.3;
+    // trail smoke
+    if (Math.random() < 0.9) emitSmoke(x, yBase + hump - 0.2, z);
+    if (Math.random() < 0.4) emitFire(x, yBase + hump - 0.2, z, 1.5, 0.4);
+    if (u >= 1) {
+      scene.remove(m.mesh);
+      bigExplosion(tp.x, tp.y, tp.z);
+      explosionSound();
+      activeMissiles.splice(i,1);
+    }
+  }
+}
+
+function missileSound() {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='sawtooth'; o.frequency.value=140; g.gain.value=0.04;
+  o.connect(g); g.connect(audioCtx.destination); o.start();
+  o.frequency.setTargetAtTime(60, audioCtx.currentTime+0.4, 0.6);
+  g.gain.setTargetAtTime(0, audioCtx.currentTime+1.5, 0.2);
+  o.stop(audioCtx.currentTime+1.7);
+}
+function explosionSound() {
+  if (!audioCtx) return;
+  // boom + crackle via two oscillators + noise burst
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='square'; o.frequency.value=80; g.gain.value=0.12;
+  o.connect(g); g.connect(audioCtx.destination); o.start();
+  o.frequency.setTargetAtTime(30, audioCtx.currentTime, 0.15);
+  g.gain.setTargetAtTime(0, audioCtx.currentTime+0.05, 0.25);
+  o.stop(audioCtx.currentTime+0.5);
+  // white noise crackle
+  const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate*0.4, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i=0;i<data.length;i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
+  const src = audioCtx.createBufferSource(); src.buffer=buffer;
+  const ng = audioCtx.createGain(); ng.gain.value=0.18;
+  src.connect(ng); ng.connect(audioCtx.destination); src.start();
 }
 function die() {
   explode(player.pos.x, player.pos.y + 1, player.pos.z);
   if (!offlineMode && connected) socket.emit('iDied', { by: player._lastHitFrom || null });
   respawn();
+}
+function bounceSound() {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='sine'; o.frequency.value=200; g.gain.value=0.08;
+  o.connect(g); g.connect(audioCtx.destination); o.start();
+  o.frequency.setTargetAtTime(800, audioCtx.currentTime, 0.1);
+  g.gain.setTargetAtTime(0, audioCtx.currentTime+0.15, 0.08);
+  o.stop(audioCtx.currentTime+0.4);
 }
 function shootSound() {
   if (!audioCtx) return;
@@ -2557,6 +3100,11 @@ function applyCarChange() {
   player.mesh.position.copy(pos); player.mesh.rotation.y = h;
   applyDamageVisual();
   pushSelectCar(); // let other players see the new car
+}
+// Rebuild self mesh in place (used after a missile reset wipes the turret etc.)
+function rebuildSelfMesh() {
+  if (!gameStarted) return;
+  applyCarChange();
 }
 function openGarage() {
   garageOpen = true; paused = false;
