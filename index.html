@@ -185,6 +185,14 @@
       <button class="btn btn-secondary" id="btnShowPublic">JOIN PUBLIC SERVER</button>
       <button class="btn btn-ghost" id="btnOffline" style="margin-top:18px;border-color:#ff7b00;color:#ffb347;">🏁 PLAY OFFLINE (Solo)</button>
       <button class="btn btn-ghost" id="btnShop" style="margin-top:8px;">🔧 UPGRADES & SHOP <span style="color:#ffd23f;">(🪙 <span id="menuCoins">0</span>)</span></button>
+      <button class="btn btn-ghost" id="btnShowAdmin" style="margin-top:8px;font-size:12px;color:#7a6a4a;border-color:#3a2f1a;">🔐 Admin Login</button>
+    </div>
+
+    <div id="menuAdmin" class="hidden">
+      <label for="adminCode">Admin Code</label>
+      <input type="text" id="adminCode" maxlength="16" placeholder="Enter admin code" style="letter-spacing:6px;font-family:monospace;" />
+      <button class="btn btn-primary" id="btnAdminUnlock">UNLOCK ADMIN</button>
+      <button class="btn btn-ghost" id="btnBackFromAdmin">Back</button>
     </div>
 
     <div id="menuJoin" class="hidden">
@@ -611,6 +619,7 @@ let scene, camera, renderer, clock;
 let socket = null, selfId = null, connected = false;
 let lobbyMeta = null, isHost = false, gameStarted = false;
 let offlineMode = false;
+let isAdmin = false;   // super-admin (validated server-side via code)
 let screen = 'menu';
 
 const WORLD = { blocks: 6, spacing: 90, half: 270 };
@@ -1275,15 +1284,12 @@ function updatePhysics(dt) {
   }
   player.suspension *= (1 - dt*4);
 
-  // fell off the world -> respawn
+  // fell off the world -> respawn (only true safety net left)
   if (player.pos.y < -15) respawn();
 
-  // flipped: count down to auto-respawn (or press R)
-  if (player.flipped) {
-    player.respawnTimer -= dt;
-    showFlipMsg('FLIPPED!  Respawning in ' + Math.max(0, Math.ceil(player.respawnTimer)) + '…<br><span style="font-size:16px;color:#cdd9ec;">press R to respawn now</span>');
-    if (player.respawnTimer <= 0) respawn();
-  }
+  // flipped onto roof/side: auto-rights in place, just show a brief hint
+  if (player.flipped) showFlipMsg('🔄 Rolling back over…');
+  else if (!player.trapped) hideFlipMsg();
 
   // body roll from lateral force, pitch from accel
   const targetRoll = -newL * 0.02;
@@ -1460,9 +1466,9 @@ function collideWithActors() {
     player.vel.y += nz * impact * 0.3;
     player.vel.multiplyScalar(0.82);
 
-    // offline NPCs are client-owned -> knock them flying
+    // offline NPCs are client-owned -> knock them flying (faster = more air)
     if (offlineMode && !isPlayer) {
-      offlineSim.knock(id, -nx*impact*1.1, -nz*impact*1.1, Math.min(8, impact*0.18));
+      offlineSim.knock(id, -nx*impact*1.8, -nz*impact*1.8, Math.min(18, impact*0.3));
     }
 
     // hard hits launch + spin my car (can flip it)
@@ -1480,23 +1486,23 @@ function collideWithActors() {
 
 function normAngle(a){ while(a>Math.PI) a-=Math.PI*2; while(a<-Math.PI) a+=Math.PI*2; return a; }
 
-// Called every frame the car is on the ground: recover small tilts, or
-// declare the car FLIPPED if it landed on its side/roof.
+// Called every frame the car is on the ground. The car ALWAYS self-rights
+// (rolls back upright in place) — no death, no respawn. Controls are only
+// locked for the brief moment it's actually tipped onto its side/roof.
 function resolveLanding(dt) {
   const nr = normAngle(player.tumbleRoll);
   const np = normAngle(player.tumblePitch);
-  const upright = Math.abs(nr) < 1.2 && Math.abs(np) < 1.2; // within ~69°
-  if (upright && !player.flipped) {
-    player.tumbleRoll  += (0 - nr) * Math.min(1, dt*6);
-    player.tumblePitch += (0 - np) * Math.min(1, dt*6);
-    player.rollVel  *= (1 - dt*8);
-    player.pitchVel *= (1 - dt*8);
-  } else {
-    if (!player.flipped) { player.flipped = true; player.respawnTimer = 3.0; }
-    player.rollVel  *= (1 - dt*10);
-    player.pitchVel *= (1 - dt*10);
-    player.vel.multiplyScalar(1 - Math.min(1, dt*6)); // grind to a halt
-  }
+  const tipped = Math.abs(nr) > 1.4 || Math.abs(np) > 1.4; // on its side/roof (~80°+)
+  // recover toward the nearest upright orientation (handles multi-flips)
+  const targetRoll  = Math.round(player.tumbleRoll  / (Math.PI*2)) * (Math.PI*2);
+  const targetPitch = Math.round(player.tumblePitch / (Math.PI*2)) * (Math.PI*2);
+  const rate = Math.min(1, dt * (tipped ? 4 : 9)); // a bit slower while heavily flipped
+  player.tumbleRoll  += (targetRoll  - player.tumbleRoll)  * rate;
+  player.tumblePitch += (targetPitch - player.tumblePitch) * rate;
+  player.rollVel  *= (1 - Math.min(1, dt*8));
+  player.pitchVel *= (1 - Math.min(1, dt*8));
+  player.flipped = tipped;                 // only locks controls while upside down
+  if (tipped) player.vel.multiplyScalar(1 - Math.min(1, dt*4));
 }
 
 function respawn() {
@@ -1744,7 +1750,7 @@ function updateHUD(dt) {
   $('pingVal').textContent = offlineMode ? 'OFFLINE' : (pingMs + ' ms');
 
   // coins (HUD) + periodic save
-  $('coinHud').textContent = '🪙 ' + Math.floor(account.coins);
+  $('coinHud').textContent = '🪙 ' + (isAdmin ? '∞' : Math.floor(account.coins));
   coinSaveTimer += dt;
   if (coinSaveTimer > 4) { saveAccount(); coinSaveTimer = 0; }
 
@@ -2297,10 +2303,10 @@ function showRaceResults(list) {
 /* =====================================================================
    SHOP / UPGRADES (client)
    ===================================================================== */
-function updateCoinsUI() { const e=$('menuCoins'); if (e) e.textContent = Math.floor(account.coins); }
+function updateCoinsUI() { const e=$('menuCoins'); if (e) e.textContent = isAdmin ? '∞' : Math.floor(account.coins); }
 function openShop() { renderShop(); $('shop').classList.remove('hidden'); }
 function renderShop() {
-  $('shopCoins').textContent = Math.floor(account.coins);
+  $('shopCoins').textContent = isAdmin ? '∞' : Math.floor(account.coins);
   const list = $('shopList'); list.innerHTML='';
   for (const key in UPGRADE_DEFS) {
     const def = UPGRADE_DEFS[key], lvl = account.upgrades[key];
@@ -2312,8 +2318,8 @@ function renderShop() {
     const btn = document.createElement('button'); btn.className='li-join';
     if (next === null) { btn.textContent='MAX'; btn.disabled=true; btn.style.background='#2a3a5a'; }
     else {
-      btn.textContent = '🪙 ' + next; btn.disabled = account.coins < next;
-      btn.onclick = ()=>{ if (account.coins >= next) { account.coins -= next; account.upgrades[key]++; saveAccount(); renderShop(); updateCoinsUI(); } };
+      btn.textContent = isAdmin ? 'FREE' : ('🪙 ' + next); btn.disabled = !isAdmin && account.coins < next;
+      btn.onclick = ()=>{ if (isAdmin || account.coins >= next) { if (!isAdmin) account.coins -= next; account.upgrades[key]++; saveAccount(); renderShop(); updateCoinsUI(); } };
     }
     row.appendChild(btn); list.appendChild(row);
   }
@@ -2326,8 +2332,8 @@ function renderShop() {
     const btn = document.createElement('button'); btn.className='li-join';
     if (account.turret) { btn.textContent='OWNED'; btn.disabled=true; btn.style.background='#16a34a'; }
     else {
-      const cost = 1500; btn.textContent='🪙 '+cost; btn.disabled = account.coins < cost;
-      btn.onclick = ()=>{ if (account.coins >= cost) { account.coins -= cost; account.turret = true; saveAccount(); renderShop(); updateCoinsUI(); if (gameStarted && player.mesh) addTurret(player.mesh, player.color); } };
+      const cost = 1500; btn.textContent = isAdmin ? 'FREE' : ('🪙 '+cost); btn.disabled = !isAdmin && account.coins < cost;
+      btn.onclick = ()=>{ if (isAdmin || account.coins >= cost) { if (!isAdmin) account.coins -= cost; account.turret = true; saveAccount(); renderShop(); updateCoinsUI(); if (gameStarted && player.mesh) addTurret(player.mesh, player.color); } };
     }
     row.appendChild(btn); list.appendChild(row);
   }
@@ -2511,8 +2517,8 @@ let paused=false;
 function togglePause() {
   paused = !paused;
   $('pause').classList.toggle('hidden', !paused);
-  // admin button only for the host when cheats are enabled
-  const canAdmin = isHost && lobbyMeta && lobbyMeta.cheats && !offlineMode;
+  // admin button: super-admins (code) always; or host with cheats enabled
+  const canAdmin = !offlineMode && (isAdmin || (isHost && lobbyMeta && lobbyMeta.cheats));
   $('btnAdmin').classList.toggle('hidden', !canAdmin);
 }
 
@@ -2680,9 +2686,27 @@ function getName() {
   const n = $('playerName').value.trim() || ('Driver'+Math.floor(Math.random()*1000));
   player.name = n; return n;
 }
-function menuMsg(t){ $('menuMsg').textContent=t||''; }
+function menuMsg(t){ const e=$('menuMsg'); e.style.color='#ff6b6b'; e.textContent=t||''; }
 
 function wireMenu() {
+  // admin login (home dashboard)
+  $('btnShowAdmin').onclick = ()=>{ $('menuMain').classList.add('hidden'); $('menuAdmin').classList.remove('hidden'); menuMsg(''); };
+  $('btnBackFromAdmin').onclick = ()=>{ $('menuMain').classList.remove('hidden'); $('menuAdmin').classList.add('hidden'); };
+  $('btnAdminUnlock').onclick = ()=>{
+    if (!connected) { menuMsg('Not connected to server'); return; }
+    const code = $('adminCode').value.trim();
+    socket.emit('adminLogin', { code }, (res)=>{
+      if (res && res.ok) {
+        isAdmin = true; updateCoinsUI(); $('adminCode').value='';
+        $('menuAdmin').classList.add('hidden'); $('menuMain').classList.remove('hidden');
+        const e=$('menuMsg'); e.style.color='#22c55e';
+        e.textContent='✅ Admin unlocked — infinite coins + admin panel in any lobby';
+      } else {
+        menuMsg('❌ ' + (res && res.error ? res.error : 'Invalid code'));
+      }
+    });
+  };
+
   $('btnShowJoin').onclick = ()=>{ $('menuMain').classList.add('hidden'); $('menuJoin').classList.remove('hidden'); $('menuPublic').classList.add('hidden'); };
   $('btnShowPublic').onclick = ()=>{ $('menuMain').classList.add('hidden'); $('menuPublic').classList.remove('hidden'); $('menuJoin').classList.add('hidden'); refreshLobbyList(); };
   $('btnBackFromJoin').onclick = ()=>{ $('menuMain').classList.remove('hidden'); $('menuJoin').classList.add('hidden'); };
