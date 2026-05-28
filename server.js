@@ -627,11 +627,46 @@ io.on('connection', (socket) => {
       steer: clampNum(s.steer || 0, -1, 1),
       damage: clampNum(s.damage || 0, 0, 1),
       horn: !!s.horn,
+      turret: !!s.turret,
+      health: clampNum(s.health == null ? 100 : s.health, 0, 100),
     };
   });
 
   // ---- RTT / ping echo -------------------------------------------------
   socket.on('rtt', (sentAt, ack) => { if (ack) ack(sentAt); });
+
+  // ---- Combat: turret fire (visual relay) + hits + kills ---------------
+  socket.on('fire', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || !d) return;
+    // relay the shot to everyone else so they can render a tracer
+    socket.to(lobby.id).emit('fire', {
+      id: socket.id,
+      x: clampNum(d.x, -1000, 1000), y: clampNum(d.y, -50, 500), z: clampNum(d.z, -1000, 1000),
+      h: Number(d.h) || 0,
+    });
+  });
+
+  socket.on('hitPlayer', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || !d || !d.targetId) return;
+    if (!lobby.players.has(d.targetId)) return;
+    const shooter = lobby.players.get(socket.id);
+    const dmg = clampNum(d.dmg, 0, 40);
+    io.to(d.targetId).emit('damaged', { from: socket.id, fromName: shooter ? shooter.name : '?', dmg });
+  });
+
+  socket.on('iDied', (d) => {
+    const lobby = currentLobby();
+    if (!lobby) return;
+    const victim = lobby.players.get(socket.id);
+    const killer = d && d.by ? lobby.players.get(d.by) : null;
+    io.to(lobby.id).emit('killFeed', {
+      killerId: d && d.by ? d.by : null,
+      killer: killer ? killer.name : 'the world',
+      victim: victim ? victim.name : '?',
+    });
+  });
 
   // ---- Chat ------------------------------------------------------------
   socket.on('chatMessage', (data) => {
@@ -783,6 +818,8 @@ setInterval(() => {
         ni: p.state.nitro ? 1 : 0,
         dmg: +(p.state.damage || 0).toFixed(2),
         horn: p.state.horn ? 1 : 0,
+        tur: p.state.turret ? 1 : 0,
+        hp: Math.round(p.state.health == null ? 100 : p.state.health),
       });
     }
     io.to(lobby.id).emit('playerUpdate', { players: updates, t: Date.now() });
