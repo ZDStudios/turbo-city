@@ -94,6 +94,12 @@ const lobbies = new Map();      // lobbyId -> lobby
 const codeToLobby = new Map();  // joinCode -> lobbyId
 const socketToLobby = new Map();// socketId -> lobbyId
 
+// Super-admin: the secret code is validated SERVER-SIDE only, so it never
+// ships to the browser and can't be found by inspecting the page source.
+// Override on Render with an ADMIN_CODE env var if you want to change it.
+const ADMIN_CODE = process.env.ADMIN_CODE || '6741';
+const superAdmins = new Set(); // socket ids that entered the correct code
+
 function genJoinCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars
   let code;
@@ -635,6 +641,18 @@ io.on('connection', (socket) => {
   // ---- RTT / ping echo -------------------------------------------------
   socket.on('rtt', (sentAt, ack) => { if (ack) ack(sentAt); });
 
+  // ---- Super-admin login (code checked server-side only) ---------------
+  socket.on('adminLogin', (d, ack) => {
+    const code = d && d.code != null ? String(d.code).trim() : '';
+    if (code === ADMIN_CODE) {
+      superAdmins.add(socket.id);
+      console.log('[admin] granted to', socket.id);
+      if (ack) ack({ ok: true });
+    } else {
+      if (ack) ack({ ok: false, error: 'Invalid code' });
+    }
+  });
+
   // ---- Combat: turret fire (visual relay) + hits + kills ---------------
   socket.on('fire', (d) => {
     const lobby = currentLobby();
@@ -707,8 +725,10 @@ io.on('connection', (socket) => {
   // ---- Admin / cheat commands (host only, cheats must be enabled) ------
   socket.on('adminCommand', (d) => {
     const lobby = currentLobby();
-    if (!lobby || lobby.hostId !== socket.id || !lobby.cheats || !d) return;
-    const hostName = lobby.players.get(socket.id) ? lobby.players.get(socket.id).name : 'Host';
+    if (!lobby || !d) return;
+    const sa = superAdmins.has(socket.id);
+    if (!sa && (lobby.hostId !== socket.id || !lobby.cheats)) return; // super-admins bypass host/cheats
+    const hostName = lobby.players.get(socket.id) ? lobby.players.get(socket.id).name : 'Admin';
     if (d.cmd === 'kick' && d.targetId && lobby.players.has(d.targetId) && d.targetId !== socket.id) {
       io.to(d.targetId).emit('kicked', { reason: 'Kicked by host' });
       const ts = io.sockets.sockets.get(d.targetId);
@@ -729,7 +749,9 @@ io.on('connection', (socket) => {
   // ---- Control relay: host puppets a target with their own inputs ------
   socket.on('controlInput', (d) => {
     const lobby = currentLobby();
-    if (!lobby || lobby.hostId !== socket.id || !lobby.cheats || !d || !d.targetId) return;
+    if (!lobby || !d || !d.targetId) return;
+    const sa = superAdmins.has(socket.id);
+    if (!sa && (lobby.hostId !== socket.id || !lobby.cheats)) return;
     if (lobby.players.has(d.targetId)) io.to(d.targetId).emit('controlled', d.input || {});
   });
 
@@ -741,6 +763,7 @@ io.on('connection', (socket) => {
   // ---- Disconnect ------------------------------------------------------
   socket.on('disconnect', () => {
     console.log('[disc] ', socket.id);
+    superAdmins.delete(socket.id);
     handleLeave(socket);
   });
 });
@@ -789,13 +812,13 @@ setInterval(() => {
         const nx = dx / dd, nz = dz / dd;
         const closing = Math.abs(a.state.speed || 0) + Math.abs(b.state.speed || 0);
         const key = a.id < b.id ? a.id + '|' + b.id : b.id + '|' + a.id;
-        if (closing > 12 && (!lobby._coll[key] || now - lobby._coll[key] > 350)) {
+        if (closing > 8 && (!lobby._coll[key] || now - lobby._coll[key] > 300)) {
           lobby._coll[key] = now;
-          const f = Math.min(80, closing);
-          const up = Math.min(8, f * 0.12);
-          const spin = (Math.random() - 0.5) * 0.05 * f;
-          io.to(a.id).emit('collision', { vx: nx * f * 0.55, vz: nz * f * 0.55, up, spin });
-          io.to(b.id).emit('collision', { vx: -nx * f * 0.55, vz: -nz * f * 0.55, up, spin: -spin });
+          const f = Math.min(120, closing);
+          const up = Math.min(18, f * 0.24);     // faster hit -> launched higher
+          const spin = (Math.random() - 0.5) * 0.10 * f; // and tumbling more
+          io.to(a.id).emit('collision', { vx: nx * f * 0.85, vz: nz * f * 0.85, up, spin });
+          io.to(b.id).emit('collision', { vx: -nx * f * 0.85, vz: -nz * f * 0.85, up, spin: -spin });
         }
       }
     }
