@@ -146,6 +146,20 @@
   .admin-btn.danger { background:#b91c1c; }
   .admin-btn.on { background:#16a34a; }
 
+  /* ---------- health / combat ---------- */
+  #healthWrap { position:absolute; top:50px; left:50%; transform:translateX(-50%); display:flex;
+    align-items:center; gap:8px; font-size:11px; color:#cdd9ec; background:#0a0e17aa; padding:4px 10px;
+    border-radius:8px; border:1px solid #2a3a5a; letter-spacing:1px; }
+  #healthBar { width:200px; height:12px; background:#0e1422; border:1px solid #2a3a5a; border-radius:6px; overflow:hidden; }
+  #healthFill { height:100%; width:100%; background:#22c55e; transition:width .15s, background .2s; }
+  #killFeed { position:absolute; top:96px; left:50%; transform:translateX(-50%); text-align:center;
+    font-size:13px; text-shadow:0 1px 3px #000; pointer-events:none; }
+  .kill-line { background:#0a0e17aa; padding:2px 10px; border-radius:6px; margin-bottom:3px; display:inline-block; }
+  #hitFlash { position:fixed; inset:0; z-index:11; pointer-events:none; opacity:0; transition:opacity .1s;
+    background:radial-gradient(ellipse at center, rgba(255,0,0,0) 38%, rgba(255,0,0,0.55) 100%); }
+  .nametag .hpbar { display:block; width:100%; height:4px; background:#3a0e0e; border-radius:2px; margin-top:2px; overflow:hidden; }
+  .nametag .hpbar i { display:block; height:100%; width:100%; background:#22c55e; }
+
   /* ---------- Pause ---------- */
   #pause { background:#0a0e17dd; z-index:30; }
   .speedo-bg { fill:#0a0e17cc; stroke:#2a3a5a; stroke-width:2; }
@@ -267,7 +281,9 @@
     <div id="nitroBar"><div id="nitroFill"></div></div>
   </div>
 
+  <div id="healthWrap">HEALTH<div id="healthBar"><div id="healthFill"></div></div></div>
   <div id="damageWrap">DAMAGE<div id="damageBar"><div id="damageFill"></div></div></div>
+  <div id="killFeed"></div>
 
   <div id="chatBox">
     <div id="chatLog"></div>
@@ -287,11 +303,12 @@
   <div id="controlsHint">
     WASD / Arrows — Drive &nbsp; SPACE — Handbrake<br/>
     In air: A/D roll · W/S pitch (line up your landing)<br/>
-    SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; ENTER — Chat<br/>
-    Right-drag — Look &nbsp; Wheel — Zoom &nbsp; ESC — Pause/Garage
+    SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; F — Shoot<br/>
+    Right-drag — Look &nbsp; Wheel — Zoom &nbsp; ENTER — Chat &nbsp; ESC — Pause
   </div>
 </div>
 <div id="speedLines"></div>
+<div id="hitFlash"></div>
 
 <!-- =================== PAUSE MENU =================== -->
 <div id="pause" class="overlay hidden">
@@ -412,8 +429,8 @@ const UPGRADE_DEFS = {
 function loadAccount() {
   try {
     const a = JSON.parse(localStorage.getItem('turbocity_account') || '{}');
-    return { coins: a.coins || 0, upgrades: Object.assign({ topSpeed:0, accel:0, handling:0, brake:0, nitro:0 }, a.upgrades || {}) };
-  } catch (e) { return { coins:0, upgrades:{ topSpeed:0, accel:0, handling:0, brake:0, nitro:0 } }; }
+    return { coins: a.coins || 0, turret: !!a.turret, upgrades: Object.assign({ topSpeed:0, accel:0, handling:0, brake:0, nitro:0 }, a.upgrades || {}) };
+  } catch (e) { return { coins:0, turret:false, upgrades:{ topSpeed:0, accel:0, handling:0, brake:0, nitro:0 } }; }
 }
 const account = loadAccount();
 function saveAccount() { try { localStorage.setItem('turbocity_account', JSON.stringify(account)); } catch (e) {} }
@@ -609,6 +626,8 @@ const player = {
   // rollover / flip physics
   tumbleRoll:0, tumblePitch:0, rollVel:0, pitchVel:0,
   airborne:false, flipped:false, respawnTimer:0, invuln:0,
+  // combat
+  health:100, lastHitMs:0, fireCooldown:0, kills:0,
 };
 
 const input = { throttle:0, brake:0, left:false, right:false, handbrake:false, nitro:false, horn:false };
@@ -636,6 +655,7 @@ const ramps = [];         // collision handled via height test
 // particles
 let skidMarks, smokePool = [], smokeIdx = 0;
 let exhaustPool = [], exhaustIdx = 0;
+let tracerPool = [], tracerIdx = 0;
 
 // audio
 let audioCtx = null, engineOsc = null, engineGain = null;
@@ -951,6 +971,29 @@ function buildParticlePools() {
     const p = new THREE.Points(geo, exMat.clone());
     p.visible=false; p.userData={life:0, vy:0};
     scene.add(p); exhaustPool.push(p);
+  }
+  // turret tracers (glowing thin beams)
+  const tracerMat = new THREE.MeshBasicMaterial({ color:0xffee44, transparent:true, opacity:0.9 });
+  for (let i=0;i<16;i++){
+    const t = new THREE.Mesh(new THREE.BoxGeometry(0.18,0.18,1), tracerMat.clone());
+    t.visible=false; t.userData={life:0};
+    scene.add(t); tracerPool.push(t);
+  }
+}
+function spawnTracer(x, y, z, heading) {
+  const t = tracerPool[tracerIdx]; tracerIdx=(tracerIdx+1)%tracerPool.length;
+  const len = 140;
+  t.visible = true; t.material.opacity = 0.9; t.userData.life = 0.12;
+  t.scale.z = len;
+  t.position.set(x + Math.sin(heading)*len/2, y, z + Math.cos(heading)*len/2);
+  t.rotation.set(0, heading, 0);
+}
+function updateTracers(dt) {
+  for (const t of tracerPool) {
+    if (!t.visible) continue;
+    t.userData.life -= dt;
+    t.material.opacity = Math.max(0, t.userData.life*7);
+    if (t.userData.life <= 0) t.visible = false;
   }
 }
 function emitSmoke(x,y,z) {
@@ -1466,6 +1509,7 @@ function respawn() {
   player.bodyRoll = 0; player.pitch = 0;
   player.flipped = false; player.respawnTimer = 0; player.airborne = false;
   player.damage = Math.max(0, player.damage - 0.5); // patch up half the damage
+  player.health = 100; player.lastHitMs = 0;        // full repair on respawn
   applyDamageVisual();
   player.invuln = 1.5;
   hideFlipMsg();
@@ -1545,6 +1589,7 @@ function animate() {
       }
     }
     crashCooldown = Math.max(0, crashCooldown - dt);
+    player.fireCooldown = Math.max(0, player.fireCooldown - dt);
     updatePhysics(dt);
     updateRace(dt);
     updateCamera(dt);
@@ -1553,6 +1598,7 @@ function animate() {
     interpolateRemotes(dt);
     interpolateNpcs(dt);
     updateParticles(dt);
+    updateTracers(dt);
     updateRain(dt);
     applyDayNight(dt);
     updateEngineSound();
@@ -1677,6 +1723,14 @@ function updateHUD(dt) {
   // damage
   $('damageFill').style.width = (player.damage*100)+'%';
 
+  // health: slow regen when not recently shot
+  if (player.health < 100 && performance.now() - player.lastHitMs > 4000) {
+    player.health = Math.min(100, player.health + 12*dt);
+  }
+  const hf = $('healthFill');
+  hf.style.width = player.health + '%';
+  hf.style.background = player.health > 50 ? '#22c55e' : player.health > 20 ? '#eab308' : '#ef4444';
+
   // clock (free roam time)
   freeClock += dt;
   const mm = String(Math.floor(freeClock/60)).padStart(2,'0');
@@ -1737,6 +1791,7 @@ function updateNameTags() {
     const sy = (-tmpV.y*0.5+0.5)*window.innerHeight;
     r.tagEl.style.display='block';
     r.tagEl.style.left = sx+'px'; r.tagEl.style.top = sy+'px';
+    if (r.hpEl && r.target && r.target.hp != null) r.hpEl.style.width = r.target.hp + '%';
   }
 }
 
@@ -1755,6 +1810,7 @@ function setupInput() {
     if (e.code==='Space') e.preventDefault();
     if (e.code==='KeyH' && gameStarted) { input.horn=true; playHorn(); }
     if (e.code==='KeyR' && gameStarted) { respawn(); }
+    if (e.code==='KeyF' && gameStarted) { fire(); }
     if (e.code==='Enter' && gameStarted) { openChat(); }
     if (e.code==='Escape' && gameStarted) { if (garageOpen) closeGarage(); else togglePause(); }
     refreshInput();
@@ -1770,6 +1826,7 @@ function setupInput() {
   canvas.addEventListener('contextmenu', e=> e.preventDefault());
   canvas.addEventListener('mousedown', e=>{
     if (e.button===2){ cam.free=true; cam.dragging=true; cam.lastX=e.clientX; cam.lastY=e.clientY; }
+    if (e.button===0 && gameStarted){ fire(); }  // left-click to shoot
   });
   window.addEventListener('mouseup', e=>{
     if (e.button===2){ cam.dragging=false; cam.free=false; } // snap back
@@ -1839,8 +1896,15 @@ function connect() {
       if (p.id === selfId) continue;
       ensureRemotePlayer(p);
       const r = remotePlayers.get(p.id);
+      // rebuild the mesh if they switched vehicle or colour (fixes plane showing as a car)
+      if (r.carType !== p.carType || r.color !== p.color || (!!p.tur) !== r.turret) {
+        scene.remove(r.mesh);
+        r.mesh = buildCarMesh(p.carType || 'sports', p.color || 0x3366cc);
+        if (p.tur) addTurret(r.mesh, p.color || 0x3366cc);
+        scene.add(r.mesh);
+        r.carType = p.carType; r.color = p.color; r.turret = !!p.tur;
+      }
       r.target = p;
-      if (p.horn) {/* could show bubble */}
     }
   });
 
@@ -1883,6 +1947,22 @@ function connect() {
   socket.on('controlled', (inp) => { beingControlled = true; controlInputData = inp || {}; lastControlMs = performance.now(); });
   socket.on('kicked', (d) => { quitToMenu(); menuMsg('You were kicked: ' + (d && d.reason ? d.reason : '')); });
 
+  // ---- combat ----
+  socket.on('fire', (d) => { if (gameStarted && d) spawnTracer(d.x, d.y, d.z, d.h); });
+  socket.on('damaged', (d) => {
+    if (!gameStarted || player.invuln > 0 || !d) return;
+    player.health -= d.dmg;
+    player.lastHitMs = performance.now();
+    player._lastHitFrom = d.from;
+    flashHit();
+    if (player.health <= 0) { player.health = 0; die(); }
+  });
+  socket.on('killFeed', (d) => {
+    if (!d) return;
+    addKillFeed(`<b style="color:#ffd23f;">${escapeHtml(d.killer)}</b> 💥 ${escapeHtml(d.victim)}`);
+    if (d.killerId === selfId) { addCoins(150); saveAccount(); updateCoinsUI(); player.kills++; }
+  });
+
   // ping measurement via RTT echo
   setInterval(()=>{
     if (!connected) return;
@@ -1906,18 +1986,35 @@ function sendInput() {
     steer: player.steer, braking: player.braking,
     nitro: (input.nitro && player.nitro>0)||player.boostTimer>0,
     damage: player.damage, horn: input.horn,
+    turret: account.turret, health: player.health,
   });
 }
 
 function ensureRemotePlayer(p) {
   if (remotePlayers.has(p.id)) return;
   const mesh = buildCarMesh(p.carType||'sports', p.color||0x3366cc);
+  if (p.tur) addTurret(mesh, p.color||0x3366cc);
   scene.add(mesh);
-  // name tag element
+  // name tag with a small health bar
   const tag = document.createElement('div');
-  tag.className='nametag'; tag.textContent = p.name || 'Player';
+  tag.className='nametag';
+  tag.innerHTML = `<span>${escapeHtml(p.name || 'Player')}</span><span class="hpbar"><i></i></span>`;
   $('nameTags').appendChild(tag);
-  remotePlayers.set(p.id, { mesh, target:p, tagEl:tag, opacity:1, fading:false });
+  remotePlayers.set(p.id, { mesh, target:p, tagEl:tag, hpEl: tag.querySelector('.hpbar i'), opacity:1, fading:false, carType:p.carType, color:p.color, turret:!!p.tur });
+}
+
+/* turret barrel attached on top of a vehicle */
+function addTurret(group, colorHex) {
+  if (group.userData.turret) return;
+  const t = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.5,0.3,10),
+    new THREE.MeshStandardMaterial({ color:0x333333, metalness:0.7, roughness:0.4 }));
+  base.position.y = 0.15; t.add(base);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,2.2,8),
+    new THREE.MeshStandardMaterial({ color:0x222222, metalness:0.8, roughness:0.3 }));
+  barrel.rotation.x = Math.PI/2; barrel.position.set(0, 0.3, -1); t.add(barrel);
+  t.position.set(0, group.userData.isPlane ? 1.6 : 1.5, 0);
+  group.add(t); group.userData.turret = t;
 }
 function ensureNpc(n) {
   if (npcCars.has(n.id)) return;
@@ -2075,6 +2172,7 @@ function startOfflineGame() {
 
   if (player.mesh) scene.remove(player.mesh);
   player.mesh = buildCarMesh(player.carType, player.color);
+  if (account.turret) addTurret(player.mesh, player.color);
   scene.add(player.mesh);
 
   player.pos.set(line(1) + Math.random()*4, 0, line(1)+4);
@@ -2083,6 +2181,7 @@ function startOfflineGame() {
   player.tumbleRoll=0; player.tumblePitch=0; player.rollVel=0; player.pitchVel=0;
   player.flipped=false; player.respawnTimer=0; player.airborne=false; player.invuln=1.5;
   player.trapped=false; player.planeThrottle=0; beingControlled=false; adminControlTarget=null;
+  player.health=100; player.lastHitMs=0; player.fireCooldown=0;
   hideFlipMsg();
   freeClock = 0;
 
@@ -2218,6 +2317,20 @@ function renderShop() {
     }
     row.appendChild(btn); list.appendChild(row);
   }
+  // one-time turret unlock
+  {
+    const row = document.createElement('div'); row.className='player-row';
+    const left = document.createElement('span'); left.style.flex='1';
+    left.innerHTML = '🔫 Turret Gun <span style="color:#8aa0c0;font-size:11px;">— shoot players (F / left-click)</span>';
+    row.appendChild(left);
+    const btn = document.createElement('button'); btn.className='li-join';
+    if (account.turret) { btn.textContent='OWNED'; btn.disabled=true; btn.style.background='#16a34a'; }
+    else {
+      const cost = 1500; btn.textContent='🪙 '+cost; btn.disabled = account.coins < cost;
+      btn.onclick = ()=>{ if (account.coins >= cost) { account.coins -= cost; account.turret = true; saveAccount(); renderShop(); updateCoinsUI(); if (gameStarted && player.mesh) addTurret(player.mesh, player.color); } };
+    }
+    row.appendChild(btn); list.appendChild(row);
+  }
 }
 
 /* =====================================================================
@@ -2258,6 +2371,71 @@ function renderAdmin() {
 let beingControlled = false, controlInputData = null, lastControlMs = 0;
 
 /* =====================================================================
+   COMBAT — turret firing, damage, explosions, kill feed
+   ===================================================================== */
+function fire() {
+  if (!account.turret || !gameStarted || player.flipped || player.trapped || paused || garageOpen) return;
+  if (player.fireCooldown > 0) return;
+  player.fireCooldown = 0.28;
+  const aim = player.heading;                  // shots go where the vehicle points
+  const ox = player.pos.x, oy = player.pos.y + 1.6, oz = player.pos.z;
+  spawnTracer(ox, oy, oz, aim);
+  shootSound();
+  if (!offlineMode && connected) socket.emit('fire', { x:ox, y:oy, z:oz, h:aim });
+
+  const dirx = Math.sin(aim), dirz = Math.cos(aim);
+  const pickInCone = (entries, getT) => {
+    let best=null, bd=1e9;
+    for (const [id, e] of entries) {
+      const t = getT(e); if (!t) continue;
+      const vx = t.x-ox, vz = t.z-oz, dist = Math.hypot(vx,vz);
+      if (dist > 140 || dist < 1) continue;
+      if ((vx*dirx + vz*dirz)/dist > 0.985 && dist < bd) { bd = dist; best = id; }
+    }
+    return best;
+  };
+  if (offlineMode) {
+    const id = pickInCone(npcCars, n=>n.target);
+    if (id) offlineSim.knock(id, dirx*45, dirz*45, 6);
+  } else {
+    const id = pickInCone(remotePlayers, r=>r.target);
+    if (id && connected) {
+      socket.emit('hitPlayer', { targetId:id, dmg:12 });
+      const r = remotePlayers.get(id);
+      if (r) emitSmoke(r.mesh.position.x, r.mesh.position.y+1, r.mesh.position.z);
+    }
+  }
+}
+function explode(x, y, z) {
+  for (let i=0;i<18;i++) emitSmoke(x + (Math.random()-0.5)*3, y + Math.random()*2.5, z + (Math.random()-0.5)*3);
+}
+function die() {
+  explode(player.pos.x, player.pos.y + 1, player.pos.z);
+  if (!offlineMode && connected) socket.emit('iDied', { by: player._lastHitFrom || null });
+  respawn();
+}
+function shootSound() {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='square'; o.frequency.value=180; g.gain.value=0.05;
+  o.connect(g); g.connect(audioCtx.destination); o.start();
+  o.frequency.setTargetAtTime(60, audioCtx.currentTime, 0.05);
+  g.gain.setTargetAtTime(0, audioCtx.currentTime+0.05, 0.04);
+  o.stop(audioCtx.currentTime+0.2);
+}
+function flashHit() {
+  const el = $('hitFlash'); el.style.opacity = '0.6';
+  clearTimeout(el._t); el._t = setTimeout(()=> el.style.opacity = '0', 120);
+}
+function addKillFeed(html) {
+  const feed = $('killFeed');
+  const div = document.createElement('div'); div.className='kill-line'; div.innerHTML = html;
+  feed.appendChild(div);
+  while (feed.children.length > 5) feed.removeChild(feed.firstChild);
+  setTimeout(()=>{ if (div.parentNode) div.remove(); }, 5000);
+}
+
+/* =====================================================================
    GAME START / TEARDOWN
    ===================================================================== */
 function onGameStart(d) {
@@ -2274,6 +2452,7 @@ function onGameStart(d) {
   // build self car
   if (player.mesh) scene.remove(player.mesh);
   player.mesh = buildCarMesh(player.carType, player.color);
+  if (account.turret) addTurret(player.mesh, player.color);
   scene.add(player.mesh);
 
   // spawn position
@@ -2283,6 +2462,7 @@ function onGameStart(d) {
   player.tumbleRoll=0; player.tumblePitch=0; player.rollVel=0; player.pitchVel=0;
   player.flipped=false; player.respawnTimer=0; player.airborne=false; player.invuln=1.5;
   player.trapped=false; player.planeThrottle=0; beingControlled=false; adminControlTarget=null;
+  player.health=100; player.lastHitMs=0; player.fireCooldown=0;
   hideFlipMsg();
   freeClock = 0;
 
@@ -2366,6 +2546,7 @@ function applyCarChange() {
   const pos = player.pos.clone(), h = player.heading;
   if (player.mesh) scene.remove(player.mesh);
   player.mesh = buildCarMesh(player.carType, player.color);
+  if (account.turret) addTurret(player.mesh, player.color);
   scene.add(player.mesh);
   player.mesh.position.copy(pos); player.mesh.rotation.y = h;
   applyDamageVisual();
