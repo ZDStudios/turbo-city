@@ -247,6 +247,7 @@ function spawnNpcs(lobby) {
       knockVx: 0, knockVz: 0, knockSpin: 0, spin: 0,
       // tumble: roll = around forward axis, pitch = around side axis
       roll: 0, pitch: 0, rollVel: 0, pitchVel: 0,
+      hp: 100,                  // bullets chip away at this — 0 = explode
     });
   }
   return npcs;
@@ -708,13 +709,52 @@ io.on('connection', (socket) => {
     const dx = Number(d.dx) || 0, dz = Number(d.dz) || 0;
     const dl = Math.hypot(dx, dz) || 1;
     const nx = dx/dl, nz = dz/dl;
-    const f = 90 + clampNum(d.dmg, 0, 40) * 4;
+    const dmg = clampNum(d.dmg, 0, 40);
+    const f = 90 + dmg * 4;
     n.knockVx += nx * f * 1.1;
     n.knockVz += nz * f * 1.1;
     n.vy = Math.max(n.vy, 16);
     n.knockSpin += (Math.random() - 0.5) * 10;
     n.rollVel  += (Math.random() - 0.5) * 9;
     n.pitchVel += (Math.random() - 0.5) * 6;
+    // chip HP; if destroyed -> tell everyone to explode it, then respawn it
+    n.hp = (n.hp == null ? 100 : n.hp) - (dmg || 12);
+    if (n.hp <= 0) {
+      io.to(lobby.id).emit('npcDestroyed', {
+        id: n.id, x: n.x, y: n.y || 0, z: n.z,
+      });
+      // respawn on a fresh waypoint after a short delay (so explosion plays)
+      const path = NPC_PATHS[n.path];
+      const a = path[0], b = path[1];
+      setTimeout(() => {
+        if (!lobbies.has(lobby.id)) return;
+        n.x = a.x + (b.x - a.x) * Math.random();
+        n.z = a.z + (b.z - a.z) * Math.random();
+        n.y = 0; n.vy = 0;
+        n.knockVx = 0; n.knockVz = 0; n.knockSpin = 0; n.spin = 0;
+        n.roll = 0; n.pitch = 0; n.rollVel = 0; n.pitchVel = 0;
+        n.heading = Math.atan2(b.x - a.x, b.z - a.z);
+        n.speed = 0; n.seg = 0; n.hp = 100;
+      }, 800);
+    }
+  });
+
+  // ---- Hit a pedestrian: squish/blow up + respawn at a new corner --------
+  socket.on('hitPed', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || !d || !d.id) return;
+    const p = lobby.peds.find((o) => o.id === d.id);
+    if (!p) return;
+    io.to(lobby.id).emit('pedHit', { id: p.id, x: p.x, y: 0, z: p.z });
+    // respawn elsewhere
+    const gi = 1 + Math.floor(Math.random() * (WORLD.blocks - 1));
+    const gj = 1 + Math.floor(Math.random() * (WORLD.blocks - 1));
+    const cx = WORLD.line(gi), cz = WORLD.line(gj), r = 8;
+    p.loop = [
+      { x: cx - r, z: cz - r }, { x: cx + r, z: cz - r },
+      { x: cx + r, z: cz + r }, { x: cx - r, z: cz + r },
+    ];
+    p.x = cx; p.z = cz; p.seg = 0; p.heading = 0;
   });
 
   socket.on('iDied', (d) => {
