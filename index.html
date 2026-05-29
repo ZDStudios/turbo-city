@@ -682,6 +682,7 @@ let exhaustPool = [], exhaustIdx = 0;
 let tracerPool = [], tracerIdx = 0;
 let firePool = [], fireIdx = 0;          // bright orange explosion sparks
 let shockPool = [], shockIdx = 0;        // expanding ground shockwave rings
+let bulletPool = [], bulletIdx = 0;      // visible turret bullets (small glowing pellets)
 const activeMissiles = [];               // {mesh, trailIdx, fromPos, toId, t0, dur}
 const bouncePads = [];                   // {pos, mesh, cooldown}
 
@@ -1314,6 +1315,48 @@ function buildParticlePools() {
     r.rotation.x = -Math.PI/2; r.visible=false; r.userData={ life:0, max:1 };
     scene.add(r); shockPool.push(r);
   }
+  // bullets — visible projectiles that travel from the turret to the target
+  const bulletGeo = new THREE.SphereGeometry(0.18, 8, 6);
+  const bulletMat = new THREE.MeshBasicMaterial({ color:0xffee44 });
+  for (let i=0;i<24;i++){
+    const b = new THREE.Mesh(bulletGeo, bulletMat.clone());
+    b.visible = false;
+    b.userData = { vx:0, vy:0, vz:0, life:0, range:140, dist:0, hitFn:null };
+    scene.add(b); bulletPool.push(b);
+  }
+}
+// fires a single visible bullet from (x,y,z) in `heading`. onHit gets called
+// when the bullet has traveled to the target distance (or its max range).
+function spawnBullet(x, y, z, heading, targetDist, onHit) {
+  const b = bulletPool[bulletIdx]; bulletIdx = (bulletIdx + 1) % bulletPool.length;
+  const speed = 120;
+  b.visible = true;
+  b.position.set(x, y, z);
+  const dirx = Math.sin(heading), dirz = Math.cos(heading);
+  b.userData.vx = dirx * speed;
+  b.userData.vz = dirz * speed;
+  b.userData.vy = 0;
+  b.userData.life = 1.2;
+  b.userData.dist = 0;
+  b.userData.range = Math.min(160, targetDist != null ? targetDist : 160);
+  b.userData.hitFn = onHit || null;
+  b.material.color.setHex(0xffee44);
+}
+function updateBullets(dt) {
+  for (const b of bulletPool) {
+    if (!b.visible) continue;
+    b.userData.life -= dt;
+    const step = Math.hypot(b.userData.vx, b.userData.vz) * dt;
+    b.position.x += b.userData.vx * dt;
+    b.position.z += b.userData.vz * dt;
+    b.userData.dist += step;
+    // tiny glowing trail
+    if (Math.random() < 0.4) emitFire(b.position.x, b.position.y, b.position.z, 0.4, 0.25);
+    if (b.userData.life <= 0 || b.userData.dist >= b.userData.range) {
+      b.visible = false;
+      if (b.userData.hitFn) { try { b.userData.hitFn(b.position.x, b.position.y, b.position.z); } catch(e){} b.userData.hitFn = null; }
+    }
+  }
 }
 function spawnTracer(x, y, z, heading) {
   const t = tracerPool[tracerIdx]; tracerIdx=(tracerIdx+1)%tracerPool.length;
@@ -1357,14 +1400,23 @@ function emitShockwave(x,y,z, maxR) {
 }
 function bigExplosion(x, y, z) {
   // many overlapping particle types — smoke, fire, shockwave
+  // NOTE: trimmed down (was 30+24, no light cap) to avoid stalling the victim's
+  //   frame when an admin missile lands on them.
   emitShockwave(x, 0.05, z, 18);
   emitShockwave(x, 0.05, z, 11);
-  for (let i=0;i<30;i++) emitFire(x + (Math.random()-0.5)*2, y + Math.random()*1.5, z + (Math.random()-0.5)*2, 9, 1.3);
-  for (let i=0;i<24;i++) emitSmoke(x + (Math.random()-0.5)*4, y + Math.random()*4, z + (Math.random()-0.5)*4);
-  // a brief flash light
-  const flash = new THREE.PointLight(0xffcc66, 30, 60, 2);
+  for (let i=0;i<14;i++) emitFire(x + (Math.random()-0.5)*2, y + Math.random()*1.5, z + (Math.random()-0.5)*2, 9, 1.1);
+  for (let i=0;i<12;i++) emitSmoke(x + (Math.random()-0.5)*4, y + Math.random()*4, z + (Math.random()-0.5)*4);
+  // brief flash light — shadows disabled & short range so it's cheap
+  const flash = new THREE.PointLight(0xffcc66, 18, 40, 2);
+  flash.castShadow = false;
   flash.position.set(x, y+2, z); scene.add(flash);
-  setTimeout(()=> scene.remove(flash), 250);
+  setTimeout(()=> scene.remove(flash), 180);
+}
+function smallExplosion(x, y, z) {
+  // for bullets / NPC destruction — much lighter than bigExplosion
+  emitShockwave(x, 0.05, z, 7);
+  for (let i=0;i<6;i++) emitFire(x + (Math.random()-0.5)*1.4, y + Math.random()*1.2, z + (Math.random()-0.5)*1.4, 5, 0.8);
+  for (let i=0;i<5;i++) emitSmoke(x + (Math.random()-0.5)*2, y + Math.random()*2, z + (Math.random()-0.5)*2);
 }
 function updateParticles(dt) {
   for (const p of smokePool) {
@@ -1693,6 +1745,8 @@ function updatePhysics(dt) {
 
   // collide with NPCs + remote players (simple sphere push)
   collideWithActors();
+  // run over pedestrians (any speed will squish them)
+  runOverPeds();
 
   // world bounds
   const lim = WORLD.half + 30;
@@ -1828,6 +1882,28 @@ function wheelWorldPos(side) {
 function exhaustWorldPos() {
   const back = -2.2;
   return { x: player.pos.x + Math.sin(player.heading)*back, z: player.pos.z + Math.cos(player.heading)*back };
+}
+
+const PED_R = 1.6;       // squish radius — driving within this of a ped kills them
+const _pedHitCooldown = new Map(); // id -> ms timestamp; avoid double-killing on next frame
+function runOverPeds() {
+  if (Math.abs(player.speed) < 1.0) return; // need to actually be moving
+  const now = performance.now();
+  for (const [id, p] of pedMeshes) {
+    if (!p.target) continue;
+    if (!p.mesh.visible) continue;
+    const dx = player.pos.x - p.target.x, dz = player.pos.z - p.target.z;
+    if (dx*dx + dz*dz > PED_R*PED_R) continue;
+    if ((_pedHitCooldown.get(id) || 0) > now - 800) continue;
+    _pedHitCooldown.set(id, now);
+    // small splat + a coin reward (it's a video game...)
+    smallExplosion(p.target.x, 1, p.target.z);
+    p.mesh.visible = false;
+    setTimeout(()=>{ if (p.mesh) p.mesh.visible = true; }, 600);
+    addCoins(5);
+    if (offlineMode) offlineSim.killPed(id);
+    else if (connected) socket.emit('hitPed', { id });
+  }
 }
 
 const COLLIDE_R = 4.2;   // car collision radius (cars are ~4-5 long)
@@ -1992,6 +2068,7 @@ function animate() {
     interpolateNpcs(dt);
     updateParticles(dt);
     updateTracers(dt);
+    updateBullets(dt);
     updateMissiles(dt);
     updateRain(dt);
     applyDayNight(dt);
@@ -2356,24 +2433,36 @@ function connect() {
   socket.on('resetAccount', (d) => {
     resetAccount();
     if (gameStarted) {
-      // dramatic exit: huge blast, knock my car flying, then full respawn
+      // dramatic exit — but lightweight so the victim's frame doesn't stall
       bigExplosion(player.pos.x, player.pos.y + 1, player.pos.z);
       explosionSound();
-      player._vy = 28;
-      player.rollVel  += (Math.random()-0.5) * 14;
-      player.pitchVel += (Math.random()-0.5) * 10;
-      player.vel.x += (Math.random()-0.5) * 40;
-      player.vel.y += (Math.random()-0.5) * 40;
+      player._vy = 22;
+      player.rollVel  += (Math.random()-0.5) * 10;
+      player.pitchVel += (Math.random()-0.5) * 8;
       player.health = 0;
       flashHit();
-      // wait for the explosion to play, then respawn fresh
-      setTimeout(()=>{ if (gameStarted) { respawn(); rebuildSelfMesh(); } }, 900);
+      // short freeze, then respawn fresh
+      setTimeout(()=>{ if (gameStarted) { respawn(); rebuildSelfMesh(); } }, 350);
     }
     addKillFeed(`💀 You were reset${d && d.from ? ' by ' + escapeHtml(d.from) : ''} — coins/upgrades wiped`);
   });
 
+  // ---- Someone destroyed an NPC car / pedestrian — render the blast ----
+  socket.on('npcDestroyed', (d) => {
+    if (!gameStarted || !d) return;
+    smallExplosion(d.x, (d.y||0) + 1, d.z);
+    explosionSound();
+  });
+  socket.on('pedHit', (d) => {
+    if (!gameStarted || !d) return;
+    smallExplosion(d.x, 1, d.z);
+    // remove the ped's mesh briefly so the squish is visible
+    const p = pedMeshes.get(d.id);
+    if (p) { p.mesh.visible = false; setTimeout(()=>{ if (p.mesh) p.mesh.visible = true; }, 600); }
+  });
+
   // ---- combat ----
-  socket.on('fire', (d) => { if (gameStarted && d) spawnTracer(d.x, d.y, d.z, d.h); });
+  socket.on('fire', (d) => { if (gameStarted && d) spawnBullet(d.x, d.y, d.z, d.h, 140, null); });
   socket.on('damaged', (d) => {
     if (!gameStarted || player.invuln > 0 || !d) return;
     player.health -= d.dmg;
@@ -2489,7 +2578,7 @@ const offlineSim = {
         heading:Math.atan2(bpt.x-a.x, bpt.z-a.z), speed:0,
         maxSpeed:16+Math.random()*10, color:colors[i%colors.length],
         knockVx:0, knockVz:0, knockVy:0, spin:0, knockSpin:0,
-        roll:0, pitch:0, rollVel:0, pitchVel:0 });
+        roll:0, pitch:0, rollVel:0, pitchVel:0, hp:100 });
     }
     this.peds = [];
     for (let i=0;i<12;i++){
@@ -2560,13 +2649,47 @@ const offlineSim = {
     }
   },
 
-  knock(id, vx, vz, vy) {
+  knock(id, vx, vz, vy, isShot) {
     const n = this.npcs.find(o => o.id === id);
     if (!n) return;
     n.knockVx += vx; n.knockVz += vz; n.knockVy += Math.max(0, vy);
     n.knockSpin += (Math.random()-0.5) * 8;
     n.rollVel  += (Math.random()-0.5) * 7;
     n.pitchVel += (Math.random()-0.5) * 5;
+    if (isShot) {
+      n.hp -= 34;
+      if (n.hp <= 0) this.destroyNpc(n);
+    }
+  },
+  destroyNpc(n) {
+    bigExplosion(n.x, (n.y||0) + 1, n.z);
+    explosionSound();
+    // respawn at first waypoint of its path after a brief moment
+    setTimeout(() => {
+      const path = this.paths[n.path];
+      if (!path) return;
+      const a = path[0], b = path[1];
+      n.x = a.x + (b.x - a.x) * Math.random();
+      n.z = a.z + (b.z - a.z) * Math.random();
+      n.y = 0; n.knockVx = 0; n.knockVz = 0; n.knockVy = 0;
+      n.spin = 0; n.knockSpin = 0;
+      n.roll = 0; n.pitch = 0; n.rollVel = 0; n.pitchVel = 0;
+      n.heading = Math.atan2(b.x - a.x, b.z - a.z);
+      n.speed = 0; n.seg = 0; n.hp = 100;
+    }, 800);
+  },
+  killPed(id) {
+    const p = this.peds.find(o => o.id === id);
+    if (!p) return;
+    smallExplosion(p.x, 1, p.z);
+    const mesh = pedMeshes.get(p.id);
+    if (mesh) { mesh.mesh.visible = false; setTimeout(()=>{ if (mesh.mesh) mesh.mesh.visible = true; }, 600); }
+    // respawn somewhere new
+    const gi = 1 + Math.floor(Math.random()*(WORLD.blocks-1));
+    const gj = 1 + Math.floor(Math.random()*(WORLD.blocks-1));
+    const cx = line(gi), cz = line(gj), r = 8;
+    p.loop = [{x:cx-r,z:cz-r},{x:cx+r,z:cz-r},{x:cx+r,z:cz+r},{x:cx-r,z:cz+r}];
+    p.x = cx; p.z = cz; p.seg = 0;
   },
 
   stop() { this.running = false; },
@@ -2814,7 +2937,6 @@ function fire() {
   player.fireCooldown = 0.28;
   const aim = player.heading;                  // shots go where the vehicle points
   const ox = player.pos.x, oy = player.pos.y + 1.6, oz = player.pos.z;
-  spawnTracer(ox, oy, oz, aim);
   shootSound();
   if (!offlineMode && connected) socket.emit('fire', { x:ox, y:oy, z:oz, h:aim });
 
@@ -2829,24 +2951,36 @@ function fire() {
     }
     return best;
   };
-  if (offlineMode) {
-    const id = pickInCone(npcCars, n=>n.target);
-    if (id) offlineSim.knock(id, dirx*45, dirz*45, 12);
-  } else if (connected) {
-    // pick the closest hit between remote players and NPC traffic
-    const pid = pickInCone(remotePlayers, r=>r.target);
-    const nid = pickInCone(npcCars, n=>n.target);
-    let bestId=null, bestKind=null, bd=1e9;
-    if (pid) { const t=remotePlayers.get(pid).target; const d=Math.hypot(t.x-ox, t.z-oz); if (d<bd){ bd=d; bestId=pid; bestKind='p'; } }
-    if (nid) { const t=npcCars.get(nid).target;       const d=Math.hypot(t.x-ox, t.z-oz); if (d<bd){ bd=d; bestId=nid; bestKind='n'; } }
-    if (bestKind === 'p') {
-      socket.emit('hitPlayer', { targetId:bestId, dmg:12 });
-      const r = remotePlayers.get(bestId); if (r) emitSmoke(r.mesh.position.x, r.mesh.position.y+1, r.mesh.position.z);
-    } else if (bestKind === 'n') {
-      socket.emit('hitNpc', { id:bestId, dmg:12, dx:dirx, dz:dirz });
-      const t = npcCars.get(bestId).target; emitSmoke(t.x, (t.y||0)+1, t.z);
-    }
+
+  // pick whichever is closest: NPC car, pedestrian, or remote player
+  const nid = pickInCone(npcCars, n=>n.target);
+  const did = pickInCone(pedMeshes, p=>p.target);
+  const pid = offlineMode ? null : pickInCone(remotePlayers, r=>r.target);
+  let bestId=null, bestKind=null, bd=1e9;
+  function consider(id, kind, t) {
+    if (!t) return;
+    const d = Math.hypot(t.x-ox, t.z-oz);
+    if (d < bd) { bd = d; bestId = id; bestKind = kind; }
   }
+  if (nid) consider(nid, 'n', npcCars.get(nid).target);
+  if (did) consider(did, 'd', pedMeshes.get(did).target);
+  if (pid) consider(pid, 'p', remotePlayers.get(pid).target);
+
+  // visible bullet — once it lands, register the hit
+  spawnBullet(ox, oy, oz, aim, bd < 1e9 ? bd : 140, (hx, hy, hz) => {
+    if (bestKind === 'p') {
+      smallExplosion(hx, hy, hz);
+      if (connected) socket.emit('hitPlayer', { targetId:bestId, dmg:12 });
+    } else if (bestKind === 'n') {
+      smallExplosion(hx, hy, hz);
+      if (offlineMode) offlineSim.knock(bestId, dirx*45, dirz*45, 12, true);
+      else if (connected) socket.emit('hitNpc', { id:bestId, dmg:34, dx:dirx, dz:dirz });
+    } else if (bestKind === 'd') {
+      smallExplosion(hx, 1, hz);
+      if (offlineMode) offlineSim.killPed(bestId);
+      else if (connected) socket.emit('hitPed', { id:bestId });
+    }
+  });
 }
 function explode(x, y, z) {
   // upgraded: a real bang, not just smoke
