@@ -131,6 +131,8 @@
   /* ---------- coins + race HUD ---------- */
   #coinHud { position:absolute; top:52px; left:18px; font-size:15px; font-weight:800; color:#ffd23f;
     background:#0a0e17aa; padding:5px 12px; border-radius:8px; border:1px solid #2a3a5a; }
+  #rocketHud { position:absolute; top:84px; left:18px; font-size:13px; font-weight:700; color:#ff8844;
+    background:#0a0e17aa; padding:5px 12px; border-radius:8px; border:1px solid #ff6600; display:none; }
   #racePanel { position:absolute; top:84px; left:50%; transform:translateX(-50%); display:flex; gap:14px;
     background:#0a0e17cc; padding:8px 18px; border-radius:10px; border:1px solid #ff7b00; align-items:center; }
   #raceLap { font-weight:800; font-size:18px; color:#ffd23f; }
@@ -302,6 +304,7 @@
   <div id="boostMsg">NITRO BOOST!</div>
   <div id="flipMsg"></div>
   <div id="coinHud">🪙 0</div>
+  <div id="rocketHud">🚀 Rocket: -- m</div>
   <div id="racePanel" class="hidden">
     <div id="raceLap">LAP 1/3</div>
     <div id="racePos">P1</div>
@@ -426,8 +429,10 @@ const CAR_TYPES = {
              tank:true, autoTurret:true, desc:'Slow · Armored · Free cannon' },
   gripper: { name:'🕷 Gripper',    topSpeed:60, accel:30, handling:2.4, brake:36, mass:1.2, color:0x222244,
              grip:true, desc:'Climbs building walls!' },
+  bus:     { name:'🚌 Bus',        topSpeed:50, accel:18, handling:1.4, brake:30, mass:4.0, color:0xffcc33,
+             bus:true, desc:'Massive · Heavy · Plows traffic' },
 };
-const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane','tank','gripper'];
+const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane','tank','gripper','bus'];
 const COLOR_OPTIONS = [0xff3344,0xff8c1a,0xf1c40f,0x2ecc71,0x1abc9c,0x3498db,0x9b59b6,0xe84393,0xecf0f1,0x2c3e50];
 
 /* =====================================================================
@@ -487,6 +492,7 @@ function buildCarMesh(type, colorHex) {
   if (type === 'plane') return buildPlaneMesh(colorHex);
   if (type === 'tank') return buildTankMesh(colorHex);
   if (type === 'gripper') return buildGripperMesh(colorHex);
+  if (type === 'bus') return buildBusMesh(colorHex);
   const def = CAR_TYPES[type] || CAR_TYPES.sports;
   const group = new THREE.Group();
 
@@ -739,6 +745,77 @@ function buildGripperMesh(colorHex) {
   return g;
 }
 
+/* Big yellow school-bus / city-bus. Wide, long, lots of windows. */
+function buildBusMesh(colorHex) {
+  const g = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color: colorHex, metalness:0.3, roughness:0.6 });
+  g.userData.damageMat = paint;
+  // body
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.6, 2.6, 11), paint);
+  body.position.y = 1.6; body.castShadow = true; body.receiveShadow = true; g.add(body);
+  // front (slightly sloped nose)
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.6, 1.4), paint);
+  nose.position.set(0, 1.0, -5.7); g.add(nose);
+  // black stripe along the side
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.62, 0.4, 10.8),
+    new THREE.MeshStandardMaterial({ color:0x222222 }));
+  stripe.position.set(0, 0.6, 0); g.add(stripe);
+  // windows: long row of glass on both sides
+  const glassMat = new THREE.MeshStandardMaterial({ color:0x88ccff, metalness:0.1, roughness:0.05, transparent:true, opacity:0.55 });
+  for (const sx of [-1.31, 1.31]) {
+    for (let i = 0; i < 6; i++) {
+      const win = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.9, 1.3), glassMat);
+      win.position.set(sx, 2.0, -3.5 + i*1.5); g.add(win);
+    }
+  }
+  // windshield
+  const windshield = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.0, 0.1), glassMat);
+  windshield.position.set(0, 1.6, -5.4); g.add(windshield);
+  // rear window
+  const rear = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.0, 0.1), glassMat);
+  rear.position.set(0, 1.9, 5.4); g.add(rear);
+  // double doors at front-right
+  const doorMat = new THREE.MeshStandardMaterial({ color:0x111111 });
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.0, 1.6), doorMat);
+  door.position.set(1.31, 1.3, -3.5); g.add(door);
+  // wheels — 3 pairs (6 wheels)
+  const wheelMat = new THREE.MeshStandardMaterial({ color:0x111111, roughness:0.8 });
+  const rimMat = new THREE.MeshStandardMaterial({ color:0xcccccc, metalness:0.9, roughness:0.2 });
+  const wheels = [];
+  for (const [x, z] of [[ 1.45,-4.0],[-1.45,-4.0],[ 1.45, 0.5],[-1.45, 0.5],[ 1.45, 4.2],[-1.45, 4.2]]) {
+    const w = new THREE.Group();
+    const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,0.5,16), wheelMat);
+    tire.rotation.z = Math.PI/2; tire.castShadow = true; w.add(tire);
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,0.52,8), rimMat);
+    rim.rotation.z = Math.PI/2; w.add(rim);
+    w.position.set(x, 0.55, z); w.userData.isFront = z < -1;
+    g.add(w); wheels.push(w);
+  }
+  g.userData.wheels = wheels;
+  // brake/tail lights
+  const tailMat = new THREE.MeshStandardMaterial({ color:0x550000, emissive:0x330000, emissiveIntensity:1 });
+  const brakeLights = [];
+  for (const sx of [-0.9, 0.9]) {
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.25,0.1), tailMat.clone());
+    tl.position.set(sx, 1.2, 5.5); g.add(tl); brakeLights.push(tl);
+  }
+  g.userData.brakeLights = brakeLights;
+  // headlights
+  const headMat = new THREE.MeshStandardMaterial({ color:0xffffee, emissive:0xffffcc, emissiveIntensity:0.3 });
+  const headlightMeshes = [];
+  for (const sx of [-0.9, 0.9]) {
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.25,0.1), headMat.clone());
+    hl.position.set(sx, 1.0, -6.4); g.add(hl); headlightMeshes.push(hl);
+  }
+  g.userData.headlightMeshes = headlightMeshes;
+  const spot = new THREE.SpotLight(0xfff4d6, 0, 70, Math.PI/6, 0.4, 1.5);
+  spot.position.set(0, 1.0, -6.4);
+  const tgt = new THREE.Object3D(); tgt.position.set(0,0,-25); g.add(tgt); spot.target = tgt;
+  g.add(spot); g.userData.headlight = spot;
+  g.userData.isBus = true;
+  return g;
+}
+
 /* =====================================================================
    GLOBAL STATE
    ===================================================================== */
@@ -806,10 +883,12 @@ const activeMissiles = [];               // {mesh, trailIdx, fromPos, toId, t0, 
 const bouncePads = [];                   // {pos, mesh, cooldown}
 const coinPickups = [];                  // {pos, mesh, cooldown}
 
-// Rocket ship the player can drive into to launch into space.
-let rocketShip = null;                   // { group, basePos:{x,z}, baseY:0 } visual mesh
+// Rocket ships scattered around the map; drive into one to launch.
+const rocketShips = [];                  // [{ group, basePos:{x,z}, rocket, signMat, beam, orb }]
 const activeLaunches = new Map();        // playerId -> { t0, x, z, baseY, dur }
 let myLaunch = null;                     // shortcut to my own launch, if any
+// destructible trees: each tree gets a record so bullets/rams can topple it
+const trees = [];                        // [{ group, foliage, trunk, box, x, z, fallen:false, fall:0 }]
 
 // audio
 let audioCtx = null, engineOsc = null, engineGain = null;
@@ -914,7 +993,8 @@ function buildWorld(seed) {
   if (worldGroup) { scene.remove(worldGroup); }
   worldGroup = new THREE.Group(); scene.add(worldGroup);
   buildingBoxes.length = 0; boostPads.length = 0; ramps.length = 0; bouncePads.length = 0; coinPickups.length = 0;
-  rocketShip = null; activeLaunches.clear(); myLaunch = null;
+  rocketShips.length = 0; activeLaunches.clear(); myLaunch = null;
+  trees.length = 0;
   mapRng = makeRng(((seed == null ? 1 : seed) | 0) >>> 0);
   const R = mapRng;
 
@@ -1091,7 +1171,43 @@ function addTree(x, z) {
   foliage.position.y = 4; foliage.castShadow = true;
   g.add(trunk); g.add(foliage); g.position.set(x,0,z);
   worldGroup.add(g);
-  buildingBoxes.push({ minX:x-0.6, maxX:x+0.6, minZ:z-0.6, maxZ:z+0.6, top:4 });
+  // trees are SOFT collision: ramming them at speed knocks them down (no
+  // momentum loss) and bullets pop them. We track each tree so we can topple it.
+  const box = { minX:x-0.6, maxX:x+0.6, minZ:z-0.6, maxZ:z+0.6, top:4, tree:true };
+  buildingBoxes.push(box);
+  trees.push({ group:g, trunk, foliage, box, x, z, fallen:false, fall:0, dir:Math.random()*Math.PI*2, dead:false });
+}
+// Knock a tree over: rotate the group, disable its collision, leave a leaf burst.
+function destroyTree(t, dirRad) {
+  if (t.fallen || t.dead) return;
+  t.fallen = true;
+  if (typeof dirRad === 'number') t.dir = dirRad;
+  // disable collision IMMEDIATELY — driver doesn't lose momentum on a dead tree
+  t.box.tree = 'dead';
+  t.box.top = 0;
+  // shrink AABB so other physics ignores it
+  t.box.minX = t.box.maxX = t.x;
+  t.box.minZ = t.box.maxZ = t.z;
+  // leaf/dust burst
+  for (let i=0;i<10;i++) emitSmoke(t.x + (Math.random()-0.5)*2, 3, t.z + (Math.random()-0.5)*2);
+  for (let i=0;i<6;i++) emitFire(t.x + (Math.random()-0.5)*1, 3, t.z + (Math.random()-0.5)*1, 2, 0.3);
+}
+function updateTrees(dt) {
+  for (const t of trees) {
+    if (!t.fallen || t.dead) continue;
+    t.fall += dt;
+    // rotate the trunk/group toward horizontal over ~0.8s
+    const u = Math.min(1, t.fall / 0.8);
+    const ang = Math.PI/2 * u;
+    t.group.rotation.x = Math.sin(t.dir) * ang;
+    t.group.rotation.z = Math.cos(t.dir) * ang;
+    // after another second, despawn so the world stays clean
+    if (t.fall > 4) {
+      scene.remove(t.group);
+      if (worldGroup) worldGroup.remove(t.group);
+      t.dead = true;
+    }
+  }
 }
 
 /* small suburban house: rectangular base + triangular peaked roof + door */
@@ -1414,9 +1530,12 @@ function animateBouncePads(dt) {
    ROCKET SHIP — server tells us where it lives via gameStart.rocket.
    Drive into it to launch (handled in updatePhysics).
    ===================================================================== */
+function buildAllRockets(positions) {
+  for (const r of rocketShips) scene.remove(r.group);
+  rocketShips.length = 0;
+  for (const p of positions) buildRocketShip(p.x, p.z);
+}
 function buildRocketShip(x, z) {
-  // teardown old rocket if rebuilding
-  if (rocketShip) { scene.remove(rocketShip.group); rocketShip = null; }
   const g = new THREE.Group();
   g.position.set(x, 0, z);
 
@@ -1484,8 +1603,30 @@ function buildRocketShip(x, z) {
     new THREE.MeshStandardMaterial({ color:0xff6600, emissive:0xff3300, emissiveIntensity:1 }));
   sign.position.set(0, 1.5, 8); g.add(sign);
 
+  // BIG SKY BEAM so the rocket is findable from the other side of the map.
+  // ~200m tall thin emissive cylinder — visible from miles away.
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.8, 0.8, 200, 12, 1, true),
+    new THREE.MeshBasicMaterial({ color:0xff6600, transparent:true, opacity:0.45, side:THREE.DoubleSide, depthWrite:false, blending:THREE.AdditiveBlending })
+  );
+  beam.position.y = 100; g.add(beam);
+  // glowing orb on top to mark the column
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(2.5, 12, 10),
+    new THREE.MeshBasicMaterial({ color:0xffaa22 }));
+  orb.position.y = 200; g.add(orb);
+
   scene.add(g);
-  rocketShip = { group: g, rocket, basePos: { x, z }, baseY: 0, signMat: sign.material };
+  rocketShips.push({ group: g, rocket, basePos: { x, z }, baseY: 0, signMat: sign.material, beam, orb });
+}
+// closest rocket to the player (used for proximity launch, minimap, HUD compass)
+function nearestRocket() {
+  let best = null, bd = Infinity;
+  for (const r of rocketShips) {
+    const dx = player.pos.x - r.basePos.x, dz = player.pos.z - r.basePos.z;
+    const d = dx*dx + dz*dz;
+    if (d < bd) { bd = d; best = r; }
+  }
+  return best;
 }
 
 const LAUNCH_DUR = 8.5;       // seconds the launch lasts before ejection
@@ -1527,8 +1668,14 @@ function rocketAltitudeAt(u) {
   return 8 + Math.pow(u, 1.6) * 280;   // up to ~290m
 }
 function updateRocketLaunches(dt) {
-  if (rocketShip && rocketShip.signMat) {
-    rocketShip.signMat.emissiveIntensity = 0.7 + Math.sin(clock.elapsedTime*4)*0.4;
+  const tClock = clock.elapsedTime;
+  for (const rs of rocketShips) {
+    if (rs.signMat) rs.signMat.emissiveIntensity = 0.7 + Math.sin(tClock*4)*0.4;
+    // pulse the sky beam so it's easy to spot from far away
+    if (rs.beam) {
+      rs.beam.material.opacity = 0.35 + Math.abs(Math.sin(tClock*1.5))*0.35;
+    }
+    if (rs.orb) rs.orb.scale.setScalar(1 + Math.abs(Math.sin(tClock*2))*0.4);
   }
   const now = performance.now() / 1000;
   for (const [id, L] of activeLaunches) {
@@ -1554,18 +1701,17 @@ function updateRocketLaunches(dt) {
     }
     if (u >= 1) { endLaunch(id); }
   }
-  // animate the rocket mesh too — but only if MY launch is using this pad
-  if (rocketShip) {
+  // animate each rocket mesh — lift it up if a launch is using that pad
+  for (const rs of rocketShips) {
     let activeLocal = null;
     for (const L of activeLaunches.values()) {
-      if (L.x === rocketShip.basePos.x && L.z === rocketShip.basePos.z) { activeLocal = L; break; }
+      if (L.x === rs.basePos.x && L.z === rs.basePos.z) { activeLocal = L; break; }
     }
     if (activeLocal) {
       const u = rocketProgress(activeLocal, now);
-      rocketShip.rocket.position.y = rocketAltitudeAt(u) - 8;
+      rs.rocket.position.y = rocketAltitudeAt(u) - 8;
     } else {
-      // reset to rest position
-      rocketShip.rocket.position.y += (0 - rocketShip.rocket.position.y) * Math.min(1, dt*2);
+      rs.rocket.position.y += (0 - rs.rocket.position.y) * Math.min(1, dt*2);
     }
   }
 }
@@ -1670,7 +1816,8 @@ function buildParticlePools() {
 }
 // fires a single visible bullet from (x,y,z) in `heading`. onHit gets called
 // when the bullet has traveled to the target distance (or its max range).
-function spawnBullet(x, y, z, heading, targetDist, onHit, size) {
+// `homingFn`, if provided, returns a {x,y,z} for the bullet to home in on.
+function spawnBullet(x, y, z, heading, targetDist, onHit, size, homingFn) {
   const b = bulletPool[bulletIdx]; bulletIdx = (bulletIdx + 1) % bulletPool.length;
   const speed = 120;
   b.visible = true;
@@ -1680,21 +1827,46 @@ function spawnBullet(x, y, z, heading, targetDist, onHit, size) {
   b.userData.vx = dirx * speed;
   b.userData.vz = dirz * speed;
   b.userData.vy = 0;
-  b.userData.life = 1.2;
+  b.userData.life = 1.6;
   b.userData.dist = 0;
   b.userData.range = Math.min(180, targetDist != null ? targetDist : 160);
   b.userData.hitFn = onHit || null;
-  b.material.color.setHex(size && size > 1.5 ? 0xff6633 : 0xffee44);
+  b.userData.homing = homingFn || null;
+  b.material.color.setHex(homingFn ? 0xff3399 : (size && size > 1.5 ? 0xff6633 : 0xffee44));
 }
 function updateBullets(dt) {
   for (const b of bulletPool) {
     if (!b.visible) continue;
     b.userData.life -= dt;
+    // homing: steer velocity toward the target's current position
+    if (b.userData.homing) {
+      const tp = b.userData.homing();
+      if (tp) {
+        const tx = tp.x - b.position.x, ty = (tp.y||1.5) - b.position.y, tz = tp.z - b.position.z;
+        const td = Math.hypot(tx, ty, tz) || 1;
+        const speed = Math.hypot(b.userData.vx, b.userData.vz, b.userData.vy) || 120;
+        // smooth steering toward target (factor controls how aggressively it curves)
+        const k = Math.min(1, dt * 8);
+        b.userData.vx += (tx/td * speed - b.userData.vx) * k;
+        b.userData.vy += (ty/td * speed - b.userData.vy) * k;
+        b.userData.vz += (tz/td * speed - b.userData.vz) * k;
+        // close enough? trigger hit early
+        if (td < 2.5) {
+          b.visible = false;
+          if (b.userData.hitFn) { try { b.userData.hitFn(b.position.x, b.position.y, b.position.z); } catch(e){} b.userData.hitFn = null; }
+          continue;
+        }
+      } else {
+        // target gone — stop homing
+        b.userData.homing = null;
+      }
+    }
     const step = Math.hypot(b.userData.vx, b.userData.vz) * dt;
     b.position.x += b.userData.vx * dt;
+    b.position.y += b.userData.vy * dt;
     b.position.z += b.userData.vz * dt;
     b.userData.dist += step;
-    // tiny glowing trail
+    // tiny glowing trail (pink for homing, orange/yellow for normal)
     if (Math.random() < 0.4) emitFire(b.position.x, b.position.y, b.position.z, 0.4, 0.25);
     if (b.userData.life <= 0 || b.userData.dist >= b.userData.range) {
       b.visible = false;
@@ -2080,6 +2252,15 @@ function updatePhysics(dt) {
       if (player.pos.y >= (box.top||0) - 0.5) continue; // on/above the roof = floor, not wall
       // gripper car is climbing this wall right now — don't push it off
       if (climbing && climbing.box === box) continue;
+      // TREES: hit at any speed → knock down + KEEP MOMENTUM. No bounce, no damage.
+      if (box.tree === true) {
+        const t = trees.find((tr) => tr.box === box);
+        if (t && !t.fallen) {
+          destroyTree(t, Math.atan2(Math.sin(player.heading), Math.cos(player.heading)));
+          addCoins(3);
+        }
+        continue; // do NOT push out / slow down — pass through cleanly
+      }
       // push out along smallest penetration
       const dxL = player.pos.x - (box.minX-1.2);
       const dxR = (box.maxX+1.2) - player.pos.x;
@@ -2142,19 +2323,19 @@ function updatePhysics(dt) {
       bounceSound();
     }
   }
-  // ---- rocket ship pad — drive in to TAKE OFF ----
-  if (rocketShip && !myLaunch) {
-    const dx = player.pos.x - rocketShip.basePos.x;
-    const dz = player.pos.z - rocketShip.basePos.z;
-    if (dx*dx + dz*dz < 49 && player.pos.y < 4) {
-      // request the launch — server validates + broadcasts back to everyone
-      if (offlineMode) {
-        startLaunch(selfId || 'offline-self', rocketShip.basePos.x, rocketShip.basePos.z, performance.now());
-      } else if (connected) {
-        socket.emit('rocketLaunch');
-        // small local optimism so the player gets locked to the pad immediately;
-        // the server's broadcast will overwrite/confirm it
-        startLaunch(selfId, rocketShip.basePos.x, rocketShip.basePos.z, performance.now());
+  // ---- rocket ship pad — drive in to TAKE OFF (any pad) ----
+  if (rocketShips.length && !myLaunch) {
+    for (const rs of rocketShips) {
+      const dx = player.pos.x - rs.basePos.x;
+      const dz = player.pos.z - rs.basePos.z;
+      if (dx*dx + dz*dz < 49 && player.pos.y < 4) {
+        if (offlineMode) {
+          startLaunch(selfId || 'offline-self', rs.basePos.x, rs.basePos.z, performance.now());
+        } else if (connected) {
+          socket.emit('rocketLaunch');
+          startLaunch(selfId, rs.basePos.x, rs.basePos.z, performance.now());
+        }
+        break;
       }
     }
   }
@@ -2513,6 +2694,7 @@ function animate() {
     animateBouncePads(dt);
     updateCoinPickups(dt);
     updateRocketLaunches(dt);
+    updateTrees(dt);
 
     // send input ~60Hz
     if (performance.now() - lastInputSent > 1000/CONFIG.INPUT_HZ) {
@@ -2669,6 +2851,22 @@ function updateHUD(dt) {
   coinSaveTimer += dt;
   if (coinSaveTimer > 4) { saveAccount(); coinSaveTimer = 0; }
 
+  // rocket-finder: show distance + compass arrow pointing toward the NEAREST pad
+  const rh = $('rocketHud');
+  const nr = nearestRocket();
+  if (nr) {
+    const dx = nr.basePos.x - player.pos.x;
+    const dz = nr.basePos.z - player.pos.z;
+    const dist = Math.hypot(dx, dz);
+    const bearing = Math.atan2(dx, dz) - player.heading;
+    const arrows = ['↑','↗','→','↘','↓','↙','←','↖'];
+    let a = Math.round(((bearing + Math.PI*2) % (Math.PI*2)) / (Math.PI/4)) % 8;
+    rh.style.display = 'block';
+    rh.textContent = `${arrows[a]} 🚀 Rocket: ${Math.round(dist)}m`;
+  } else {
+    rh.style.display = 'none';
+  }
+
   drawMinimap();
 }
 let freeClock = 0;
@@ -2693,6 +2891,17 @@ function drawMinimap() {
   // remote players
   ctx.fillStyle = '#00e0ff';
   for (const r of remotePlayers.values()){ if(!r.target)continue; const [mx,my]=toMap(r.target.x,r.target.z); ctx.beginPath(); ctx.arc(mx,my,2.5,0,7); ctx.fill(); }
+  // rocket pads — bright orange pulsing dot for each so you can find one on huge maps
+  const pulse = 5 + Math.abs(Math.sin(clock.elapsedTime*2))*3;
+  for (const rs of rocketShips) {
+    const [rx, ry] = toMap(rs.basePos.x, rs.basePos.z);
+    ctx.fillStyle = 'rgba(255,102,0,0.35)';
+    ctx.beginPath(); ctx.arc(rx, ry, pulse + 4, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ff6600';
+    ctx.beginPath(); ctx.arc(rx, ry, 4, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif';
+    ctx.fillText('🚀', rx-5, ry-6);
+  }
   // self
   const [sx,sy]=toMap(player.pos.x, player.pos.z);
   ctx.save(); ctx.translate(sx,sy); ctx.rotate(-player.heading);
@@ -3179,10 +3388,18 @@ function startOfflineGame() {
   const seed = (Math.random()*1e9)|0;
   buildWorld(seed);
 
-  // offline rocket: tuck it in a corner of the map
-  const d = WORLD.half - 30;
-  const corner = [[ -d,-d ],[ d,-d ],[ -d,d ],[ d,d ]][Math.floor(Math.random()*4)];
-  buildRocketShip(corner[0], corner[1]);
+  // offline rockets: a few scattered around the map
+  const dist = WORLD.half - 30;
+  const offlineRockets = [
+    { x:-dist, z:-dist }, { x: dist, z: dist },
+    { x:-dist, z: dist }, { x: dist, z:-dist },
+  ];
+  // shuffle + take 2 so each solo run is a bit different
+  for (let i = offlineRockets.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1));
+    [offlineRockets[i], offlineRockets[j]] = [offlineRockets[j], offlineRockets[i]];
+  }
+  buildAllRockets(offlineRockets.slice(0, 2));
 
   setTimeOfDay(lobbyMeta.timeOfDay || 'day');
   setWeather(lobbyMeta.weather || 'clear');
@@ -3421,10 +3638,34 @@ function fire() {
     return best;
   };
 
-  // pick whichever is closest: NPC car, pedestrian, or remote player
+  // pick whichever is closest: NPC car, pedestrian, remote player, or tree
   const nid = pickInCone(npcCars, n=>n.target);
   const did = pickInCone(pedMeshes, p=>p.target);
   const pid = offlineMode ? null : pickInCone(remotePlayers, r=>r.target);
+  // AIM-BOT: if any player is within ~80m, lock onto them even outside the cone.
+  // Tank player auto-lock range is larger because tanks are slower-aiming.
+  if (!offlineMode) {
+    const lockRange = isTank ? 110 : 80;
+    let lockId = null, lockBest = lockRange;
+    for (const [id, r] of remotePlayers) {
+      if (!r.target) continue;
+      const dx = r.target.x - ox, dz = r.target.z - oz;
+      const dist = Math.hypot(dx, dz);
+      // only forward hemisphere (don't shoot behind you)
+      if (dist < lockBest && (dx*dirx + dz*dirz) > 0) {
+        lockBest = dist; lockId = id;
+      }
+    }
+    if (lockId) { /* will be considered below */ var aimBotLockId = lockId; }
+  }
+  // also pick trees in the cone
+  let treeBest = null, treeBestD = 1e9;
+  for (const t of trees) {
+    if (t.fallen) continue;
+    const vx = t.x-ox, vz = t.z-oz, dist = Math.hypot(vx,vz);
+    if (dist > 140 || dist < 1) continue;
+    if ((vx*dirx + vz*dirz)/dist > 0.985 && dist < treeBestD) { treeBestD = dist; treeBest = t; }
+  }
   let bestId=null, bestKind=null, bd=1e9;
   function consider(id, kind, t) {
     if (!t) return;
@@ -3434,12 +3675,27 @@ function fire() {
   if (nid) consider(nid, 'n', npcCars.get(nid).target);
   if (did) consider(did, 'd', pedMeshes.get(did).target);
   if (pid) consider(pid, 'p', remotePlayers.get(pid).target);
+  if (treeBest) consider(treeBest, 't', { x: treeBest.x, z: treeBest.z });
+  // aim-bot overrides — if a player is in range, always lock them
+  if (typeof aimBotLockId !== 'undefined' && aimBotLockId) {
+    bestId = aimBotLockId; bestKind = 'p';
+    const t = remotePlayers.get(aimBotLockId).target;
+    bd = Math.hypot(t.x-ox, t.z-oz);
+  }
 
   // tank shells: bigger bullet, bigger boom, more damage
   const dmgPlayer = isTank ? 28 : 12;
   const dmgNpc    = isTank ? 100 : 34;   // 1-shot kills npcs
   const explodeFn = isTank ? (x,y,z)=>{ bigExplosion(x,y,z); explosionSound(); } : smallExplosion;
   const shellSize = isTank ? 2.4 : 1.0;
+  // homing function only when locked onto a player target
+  const homingFn = bestKind === 'p'
+    ? (() => {
+        const r = remotePlayers.get(bestId);
+        if (!r || !r.target) return null;
+        return { x: r.target.x, y: (r.target.y||0) + 1.2, z: r.target.z };
+      })
+    : null;
   spawnBullet(ox, oy, oz, aim, bd < 1e9 ? bd : 140, (hx, hy, hz) => {
     if (bestKind === 'p') {
       explodeFn(hx, hy, hz);
@@ -3452,8 +3708,13 @@ function fire() {
       explodeFn(hx, 1, hz);
       if (offlineMode) offlineSim.killPed(bestId);
       else if (connected) socket.emit('hitPed', { id:bestId });
+    } else if (bestKind === 't') {
+      // tree got shot — topple it (works in both online and offline)
+      smallExplosion(bestId.x, 2, bestId.z);
+      destroyTree(bestId);
+      addCoins(5);
     }
-  }, shellSize);
+  }, shellSize, homingFn);
 }
 function explode(x, y, z) {
   // upgraded: a real bang, not just smoke
@@ -3614,8 +3875,9 @@ function onGameStart(d) {
   // rebuild the world from the server's seed so everyone shares the same map
   buildWorld(d && d.world ? d.world.seed : undefined);
 
-  // rocket position comes from the server (matches every client)
-  if (d && d.rocket) buildRocketShip(d.rocket.x, d.rocket.z);
+  // rocket positions come from the server (matches every client)
+  if (d && Array.isArray(d.rockets) && d.rockets.length) buildAllRockets(d.rockets);
+  else if (d && d.rocket) buildAllRockets([d.rocket]);   // backward-compat
 
   // apply lobby environment settings
   setTimeOfDay(lobbyMeta?.timeOfDay || 'day');
