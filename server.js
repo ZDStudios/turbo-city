@@ -115,7 +115,7 @@ const socketToLobby = new Map();// socketId -> lobbyId
 // Super-admin: the secret code is validated SERVER-SIDE only, so it never
 // ships to the browser and can't be found by inspecting the page source.
 // Override on Render with an ADMIN_CODE env var if you want to change it.
-const ADMIN_CODE = process.env.ADMIN_CODE || '8089';
+const ADMIN_CODE = process.env.ADMIN_CODE || '6741';
 const superAdmins = new Set(); // socket ids that entered the correct code
 
 function genJoinCode() {
@@ -192,8 +192,21 @@ function buildRaceCheckpoints(lobby) {
   ];
 }
 
+// Rocket pad position — placed deterministically from the map seed so every
+// client builds the rocket in the same spot. Always corner-ish so it's a
+// memorable destination.
+function pickRocketPos(W, seed) {
+  const r = (((seed >>> 0) * 9301 + 49297) % 233280) / 233280;
+  const side = Math.floor(r * 4);
+  const d = W.half - 30;
+  const corners = [{x:-d,z:-d},{x:d,z:-d},{x:-d,z:d},{x:d,z:d}];
+  return corners[side];
+}
+
 function gameStartPayload(lobby) {
   const W = worldFor(lobby);
+  const rocket = pickRocketPos(W, lobby.mapSeed);
+  lobby._rocket = rocket;
   return {
     meta: lobbyMetaPayload(lobby),
     world: { blocks: W.blocks, spacing: W.spacing, seed: lobby.mapSeed },
@@ -203,6 +216,7 @@ function gameStartPayload(lobby) {
     race: lobby.race
       ? { checkpoints: lobby.race.checkpoints, laps: lobby.race.laps, startAt: lobby.race.startAt }
       : null,
+    rocket,                     // {x, z} — where the rocket ship sits
   };
 }
 
@@ -800,6 +814,28 @@ io.on('connection', (socket) => {
       killerId: d && d.by ? d.by : null,
       killer: killer ? killer.name : 'the world',
       victim: victim ? victim.name : '?',
+    });
+  });
+
+  // ---- ROCKET LAUNCH: drive into the rocket pad to take off. The launching
+  //      player is broadcast to everyone so all clients see them ascend.
+  socket.on('rocketLaunch', () => {
+    const lobby = currentLobby();
+    if (!lobby || !lobby.started) return;
+    const p = lobby.players.get(socket.id);
+    if (!p || !p.state || !lobby._rocket) return;
+    const now = Date.now();
+    // global rocket cooldown so two people can't fight over a single launch
+    if (lobby._rocketBusyUntil && now < lobby._rocketBusyUntil) return;
+    // require them to actually be near the rocket pad (anti-cheat)
+    const dx = p.state.x - lobby._rocket.x, dz = p.state.z - lobby._rocket.z;
+    if (dx*dx + dz*dz > 100) return;             // ~10m radius
+    lobby._rocketBusyUntil = now + 14000;        // 8s launch + 6s cooldown
+    io.to(lobby.id).emit('rocketLaunch', {
+      id: socket.id,
+      name: p.name,
+      x: lobby._rocket.x, z: lobby._rocket.z,
+      t: now,
     });
   });
 
