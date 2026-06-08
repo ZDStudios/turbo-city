@@ -312,6 +312,8 @@
     WASD / Arrows — Drive &nbsp; SPACE — Handbrake<br/>
     In air: A/D roll · W/S pitch (line up your landing)<br/>
     SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; F — Shoot<br/>
+    🕷 Gripper: drive into a building wall to climb it (W up, S down)<br/>
+    🛡 Tank: F fires the cannon (no turret unlock needed)<br/>
     Right-drag — Look &nbsp; Wheel — Zoom &nbsp; ENTER — Chat &nbsp; ESC — Pause
   </div>
 </div>
@@ -420,8 +422,12 @@ const CAR_TYPES = {
              desc:'Balanced · Everyday' },
   plane:   { name:'✈ Airplane',   topSpeed:120,accel:30, handling:2.0, brake:30, mass:1.0, color:0xe8eef7,
              fly:true, desc:'Take off & fly the map' },
+  tank:    { name:'🛡 Tank',       topSpeed:42, accel:22, handling:1.6, brake:28, mass:3.5, color:0x4a5c3a,
+             tank:true, autoTurret:true, desc:'Slow · Armored · Free cannon' },
+  gripper: { name:'🕷 Gripper',    topSpeed:60, accel:30, handling:2.4, brake:36, mass:1.2, color:0x222244,
+             grip:true, desc:'Climbs building walls!' },
 };
-const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane'];
+const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane','tank','gripper'];
 const COLOR_OPTIONS = [0xff3344,0xff8c1a,0xf1c40f,0x2ecc71,0x1abc9c,0x3498db,0x9b59b6,0xe84393,0xecf0f1,0x2c3e50];
 
 /* =====================================================================
@@ -479,6 +485,8 @@ function effectiveStats() {
    ===================================================================== */
 function buildCarMesh(type, colorHex) {
   if (type === 'plane') return buildPlaneMesh(colorHex);
+  if (type === 'tank') return buildTankMesh(colorHex);
+  if (type === 'gripper') return buildGripperMesh(colorHex);
   const def = CAR_TYPES[type] || CAR_TYPES.sports;
   const group = new THREE.Group();
 
@@ -627,6 +635,110 @@ function buildPlaneMesh(colorHex) {
   return group;
 }
 
+/* Tank mesh — wide hull, treads, turret + big cannon. The turret stays here so
+   the player always has a weapon (no need to buy one in the shop). */
+function buildTankMesh(colorHex) {
+  const g = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color: colorHex, metalness:0.4, roughness:0.7 });
+  g.userData.damageMat = paint;
+  // hull
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 4.4), paint);
+  hull.position.y = 1.0; hull.castShadow = true; hull.receiveShadow = true; g.add(hull);
+  // sloped front armor
+  const front = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.5, 1.0), paint);
+  front.position.set(0, 0.8, -2.2); front.rotation.x = 0.35; g.add(front);
+  // treads (left + right) — chunky boxes with wheel detail
+  const treadMat = new THREE.MeshStandardMaterial({ color:0x111111, roughness:0.95 });
+  const wheels = [];
+  for (const sx of [-1.5, 1.5]) {
+    const tread = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.7, 4.6), treadMat);
+    tread.position.set(sx, 0.45, 0); tread.castShadow = true; g.add(tread);
+    // visible wheel detail under treads
+    for (const wz of [-1.8, -0.6, 0.6, 1.8]) {
+      const w = new THREE.Group();
+      const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.5, 12), treadMat);
+      tire.rotation.z = Math.PI/2; w.add(tire);
+      w.position.set(sx, 0.42, wz); w.userData.isFront = wz < 0;
+      g.add(w); wheels.push(w);
+    }
+  }
+  g.userData.wheels = wheels;
+  // turret base (rotates with body in this simple model)
+  const turretMat = new THREE.MeshStandardMaterial({ color: colorHex, metalness:0.5, roughness:0.6 });
+  const turret = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.2, 0.7, 12), turretMat);
+  turret.position.set(0, 1.85, 0); g.add(turret);
+  // commander hatch
+  const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.2, 10),
+    new THREE.MeshStandardMaterial({ color:0x222222 }));
+  hatch.position.set(0, 2.25, 0); g.add(hatch);
+  // BIG cannon barrel
+  const barrelMat = new THREE.MeshStandardMaterial({ color:0x333333, metalness:0.7, roughness:0.4 });
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 3.4, 12), barrelMat);
+  barrel.rotation.x = Math.PI/2; barrel.position.set(0, 1.95, -2.0); g.add(barrel);
+  // muzzle brake
+  const brake = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.5, 12), barrelMat);
+  brake.rotation.x = Math.PI/2; brake.position.set(0, 1.95, -3.6); g.add(brake);
+  // brake/tail lights so shared code is happy
+  const tailMat = new THREE.MeshStandardMaterial({ color:0x550000, emissive:0x220000, emissiveIntensity:1 });
+  const brakeLights = [];
+  for (const sx of [-0.8, 0.8]) {
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.2,0.1), tailMat.clone());
+    tl.position.set(sx, 1.1, 2.2); g.add(tl); brakeLights.push(tl);
+  }
+  g.userData.brakeLights = brakeLights;
+  g.userData.headlightMeshes = [];
+  const spot = new THREE.SpotLight(0xfff4d6, 0, 60, Math.PI/6, 0.4, 1.5);
+  spot.position.set(0, 1.1, -2.4);
+  const tgt = new THREE.Object3D(); tgt.position.set(0,0,-20); g.add(tgt); spot.target = tgt;
+  g.add(spot); g.userData.headlight = spot;
+  g.userData.isTank = true;
+  return g;
+}
+
+/* Gripper mesh — angular insect-like car with big magnetic pads.
+   This vehicle can drive up building walls (handled in updatePhysics). */
+function buildGripperMesh(colorHex) {
+  const g = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color: colorHex, metalness:0.7, roughness:0.3 });
+  g.userData.damageMat = paint;
+  // low chassis
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.6, 4.0), paint);
+  body.position.y = 0.7; body.castShadow = true; body.receiveShadow = true; g.add(body);
+  // glowing tech canopy
+  const canopy = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.5, 1.8),
+    new THREE.MeshStandardMaterial({ color:0x66ffee, emissive:0x33ccdd, emissiveIntensity:0.6, metalness:0.3, roughness:0.2, transparent:true, opacity:0.7 }));
+  canopy.position.set(0, 1.15, -0.2); g.add(canopy);
+  // grip pad wheels (four big disks with glow rims)
+  const padMat = new THREE.MeshStandardMaterial({ color:0x222222, roughness:0.5 });
+  const glowMat = new THREE.MeshStandardMaterial({ color:0x00ffaa, emissive:0x00ffaa, emissiveIntensity:1.2 });
+  const wheels = [];
+  for (const [x, z] of [[ 1.2,-1.6],[-1.2,-1.6],[ 1.2, 1.6],[-1.2, 1.6]]) {
+    const w = new THREE.Group();
+    const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.5, 12), padMat);
+    tire.rotation.z = Math.PI/2; w.add(tire);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.08, 6, 16), glowMat);
+    ring.rotation.y = Math.PI/2; w.add(ring);
+    w.position.set(x, 0.55, z); w.userData.isFront = z < 0;
+    g.add(w); wheels.push(w);
+  }
+  g.userData.wheels = wheels;
+  // brake lights
+  const tailMat = new THREE.MeshStandardMaterial({ color:0xff00aa, emissive:0xff00aa, emissiveIntensity:1 });
+  const brakeLights = [];
+  for (const sx of [-0.7, 0.7]) {
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.18,0.08), tailMat.clone());
+    tl.position.set(sx, 0.85, 2.0); g.add(tl); brakeLights.push(tl);
+  }
+  g.userData.brakeLights = brakeLights;
+  g.userData.headlightMeshes = [];
+  const spot = new THREE.SpotLight(0x66ffee, 0, 60, Math.PI/6, 0.4, 1.5);
+  spot.position.set(0, 0.9, -2.0);
+  const tgt = new THREE.Object3D(); tgt.position.set(0,0,-20); g.add(tgt); spot.target = tgt;
+  g.add(spot); g.userData.headlight = spot;
+  g.userData.isGripper = true;
+  return g;
+}
+
 /* =====================================================================
    GLOBAL STATE
    ===================================================================== */
@@ -637,7 +749,14 @@ let offlineMode = false;
 let isAdmin = false;   // super-admin (validated server-side via code)
 let screen = 'menu';
 
+// WORLD is mutable — the server can switch sizes per lobby (huge for the
+// public open-world server) and we update these values in onGameStart.
 const WORLD = { blocks: 6, spacing: 90, half: 270 };
+function setWorldSize(blocks, spacing) {
+  WORLD.blocks = blocks;
+  WORLD.spacing = spacing;
+  WORLD.half = (blocks * spacing) / 2;
+}
 
 const player = {
   name: '', carType: 'sports', color: CAR_TYPES.sports.color,
@@ -685,6 +804,7 @@ let shockPool = [], shockIdx = 0;        // expanding ground shockwave rings
 let bulletPool = [], bulletIdx = 0;      // visible turret bullets (small glowing pellets)
 const activeMissiles = [];               // {mesh, trailIdx, fromPos, toId, t0, dur}
 const bouncePads = [];                   // {pos, mesh, cooldown}
+const coinPickups = [];                  // {pos, mesh, cooldown}
 
 // audio
 let audioCtx = null, engineOsc = null, engineGain = null;
@@ -788,7 +908,7 @@ function buildWorld(seed) {
   // tear down previous map
   if (worldGroup) { scene.remove(worldGroup); }
   worldGroup = new THREE.Group(); scene.add(worldGroup);
-  buildingBoxes.length = 0; boostPads.length = 0; ramps.length = 0; bouncePads.length = 0;
+  buildingBoxes.length = 0; boostPads.length = 0; ramps.length = 0; bouncePads.length = 0; coinPickups.length = 0;
   mapRng = makeRng(((seed == null ? 1 : seed) | 0) >>> 0);
   const R = mapRng;
 
@@ -885,9 +1005,55 @@ function buildWorld(seed) {
   buildTunnel();
   buildBoostPads(R);
   buildBouncePads(R);
+  buildCoinPickups(R);
   buildRamps(R);
   buildBillboards(R);
   buildSkidLayer();
+}
+
+/* Floating spinning coin pickups scattered along the roads — drive through
+   them to grab +25 coins. Each respawns ~12s after being collected. */
+function buildCoinPickups(R) {
+  R = R || mapRng;
+  const n = 12 + Math.floor(R() * 10);
+  for (let k = 0; k < n; k++) {
+    const i = 1 + Math.floor(R() * (WORLD.blocks - 1));
+    const j = 1 + Math.floor(R() * (WORLD.blocks - 1));
+    const x = line(i) + (R() - 0.5) * 30;
+    const z = line(j) + (R() - 0.5) * 30;
+    const coin = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 0.18, 16),
+      new THREE.MeshStandardMaterial({ color:0xffd23f, emissive:0xffaa00, emissiveIntensity:0.9, metalness:0.8, roughness:0.3 }));
+    coin.rotation.x = Math.PI/2; coin.position.set(x, 2.0, z);
+    worldGroup.add(coin);
+    coinPickups.push({ pos: new THREE.Vector3(x, 2.0, z), mesh: coin, cooldown: 0 });
+  }
+}
+function updateCoinPickups(dt) {
+  for (const c of coinPickups) {
+    if (c.cooldown > 0) {
+      c.cooldown -= dt;
+      if (c.cooldown <= 0) { c.mesh.visible = true; }
+      continue;
+    }
+    c.mesh.rotation.z += dt * 3;          // spin
+    c.mesh.position.y = c.pos.y + Math.sin(clock.elapsedTime * 2 + c.pos.x) * 0.25;
+    // pickup if close
+    const dx = player.pos.x - c.pos.x, dz = player.pos.z - c.pos.z;
+    if (dx*dx + dz*dz < 6 && Math.abs(player.pos.y - c.pos.y) < 3) {
+      addCoins(25); saveAccount(); updateCoinsUI();
+      coinPickupSound();
+      c.mesh.visible = false; c.cooldown = 12;
+    }
+  }
+}
+function coinPickupSound() {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type='sine'; o.frequency.value=880; g.gain.value=0.06;
+  o.connect(g); g.connect(audioCtx.destination); o.start();
+  o.frequency.setTargetAtTime(1760, audioCtx.currentTime, 0.04);
+  g.gain.setTargetAtTime(0, audioCtx.currentTime+0.1, 0.06);
+  o.stop(audioCtx.currentTime+0.3);
 }
 
 function addBuilding(x, z, w, d, h) {
@@ -1327,20 +1493,21 @@ function buildParticlePools() {
 }
 // fires a single visible bullet from (x,y,z) in `heading`. onHit gets called
 // when the bullet has traveled to the target distance (or its max range).
-function spawnBullet(x, y, z, heading, targetDist, onHit) {
+function spawnBullet(x, y, z, heading, targetDist, onHit, size) {
   const b = bulletPool[bulletIdx]; bulletIdx = (bulletIdx + 1) % bulletPool.length;
   const speed = 120;
   b.visible = true;
   b.position.set(x, y, z);
+  b.scale.setScalar(size || 1);
   const dirx = Math.sin(heading), dirz = Math.cos(heading);
   b.userData.vx = dirx * speed;
   b.userData.vz = dirz * speed;
   b.userData.vy = 0;
   b.userData.life = 1.2;
   b.userData.dist = 0;
-  b.userData.range = Math.min(160, targetDist != null ? targetDist : 160);
+  b.userData.range = Math.min(180, targetDist != null ? targetDist : 160);
   b.userData.hitFn = onHit || null;
-  b.material.color.setHex(0xffee44);
+  b.material.color.setHex(size && size > 1.5 ? 0xff6633 : 0xffee44);
 }
 function updateBullets(dt) {
   for (const b of bulletPool) {
@@ -1587,6 +1754,9 @@ function playHorn() {
 function updatePhysics(dt) {
   const def = effectiveStats();
   if (def.fly) { updatePlanePhysics(dt, def); return; }
+  // gripper cars climb building walls. handled BEFORE normal AABB collision so
+  // we can override gravity/groundY while stuck to a wall.
+  const climbing = def.grip ? updateGripperClimb(dt) : false;
   const fwd = new THREE.Vector2(Math.sin(player.heading), Math.cos(player.heading));
 
   // signed forward speed
@@ -1728,6 +1898,8 @@ function updatePhysics(dt) {
     if (player.pos.x > box.minX-1.2 && player.pos.x < box.maxX+1.2 &&
         player.pos.z > box.minZ-1.2 && player.pos.z < box.maxZ+1.2) {
       if (player.pos.y >= (box.top||0) - 0.5) continue; // on/above the roof = floor, not wall
+      // gripper car is climbing this wall right now — don't push it off
+      if (climbing && climbing.box === box) continue;
       // push out along smallest penetration
       const dxL = player.pos.x - (box.minX-1.2);
       const dxR = (box.maxX+1.2) - player.pos.x;
@@ -1870,6 +2042,72 @@ function updatePlanePhysics(dt, def) {
     player.mesh.userData.propeller.rotation.z += 0.5 + player.planeThrottle*2.5;
   }
   addCoins(Math.abs(player.speed) * dt * 0.015);
+}
+
+/* =====================================================================
+   GRIPPER CAR — drives up vertical building walls.
+
+   Approach: when the gripper is touching a tall building's wall AND
+   pressing throttle/brake into it, we override gravity and shift the car
+   straight up (or down) the wall face. Once the car clears the building
+   top, normal physics takes over so they can drive across the roof.
+   Off the wall, gravity returns immediately.
+   ===================================================================== */
+function updateGripperClimb(dt) {
+  if (player.flipped || player.trapped) return false;
+  if (player.pos.y > 4 && player.airborne === false) {
+    // already on top of something — let normal physics do the rest
+    return false;
+  }
+  // Find the closest tall building wall we're touching
+  let best = null, bestPen = 999;
+  for (const box of buildingBoxes) {
+    if ((box.top || 0) < 8) continue;       // only climb tall buildings
+    if (player.pos.x < box.minX - 1.4 || player.pos.x > box.maxX + 1.4) continue;
+    if (player.pos.z < box.minZ - 1.4 || player.pos.z > box.maxZ + 1.4) continue;
+    if (player.pos.y > box.top - 0.5) continue;
+    // distance to each face — pick smallest
+    const dN = Math.abs(player.pos.z - box.minZ);
+    const dS = Math.abs(player.pos.z - box.maxZ);
+    const dE = Math.abs(player.pos.x - box.maxX);
+    const dW = Math.abs(player.pos.x - box.minX);
+    const min = Math.min(dN, dS, dE, dW);
+    if (min > 2.0) continue;
+    let face = (min === dN) ? 'N' : (min === dS) ? 'S' : (min === dE) ? 'E' : 'W';
+    if (min < bestPen) { bestPen = min; best = { box, face }; }
+  }
+  if (!best) return false;
+
+  // we're stuck to the wall — kill normal velocity into the wall, climb based on throttle
+  const climbSpeed = 22;
+  const thr = input.throttle ? 1 : 0;
+  const brk = input.brake ? 1 : 0;
+  if (thr) player.pos.y += climbSpeed * dt;
+  else if (brk) player.pos.y -= climbSpeed * dt;
+  if (player.pos.y < 0) player.pos.y = 0;
+  player._vy = 0;
+  // glue car to wall surface (don't penetrate)
+  const STICK = 1.0;
+  if (best.face === 'N') player.pos.z = best.box.minZ - STICK;
+  if (best.face === 'S') player.pos.z = best.box.maxZ + STICK;
+  if (best.face === 'E') player.pos.x = best.box.maxX + STICK;
+  if (best.face === 'W') player.pos.x = best.box.minX - STICK;
+  // visual: lean toward wall so it really looks stuck
+  const targetPitch = thr ? -0.6 : (brk ? 0.6 : 0);
+  player.tumblePitch += (targetPitch - player.tumblePitch) * Math.min(1, dt*5);
+  // dampen horizontal velocity so we don't slide off
+  player.vel.multiplyScalar(1 - Math.min(1, dt*3));
+  player.airborne = false;
+  player.flipped = false;
+  // if we drove over the top, give a little forward shove onto the roof
+  if (player.pos.y >= best.box.top - 0.2) {
+    player.pos.y = best.box.top + 0.1;
+    if (best.face === 'N') player.vel.y -= 8;
+    if (best.face === 'S') player.vel.y += 8;
+    if (best.face === 'E') player.vel.x += 8;
+    if (best.face === 'W') player.vel.x -= 8;
+  }
+  return best;
 }
 
 function wheelWorldPos(side) {
@@ -2077,6 +2315,7 @@ function animate() {
     updateNameTags();
     animateBoostPads(dt);
     animateBouncePads(dt);
+    updateCoinPickups(dt);
 
     // send input ~60Hz
     if (performance.now() - lastInputSent > 1000/CONFIG.INPUT_HZ) {
@@ -2375,7 +2614,7 @@ function connect() {
       if (r.carType !== p.carType || r.color !== p.color || (!!p.tur) !== r.turret) {
         scene.remove(r.mesh);
         r.mesh = buildCarMesh(p.carType || 'sports', p.color || 0x3366cc);
-        if (p.tur) addTurret(r.mesh, p.color || 0x3366cc);
+        if (p.tur && !CAR_TYPES[p.carType]?.autoTurret) addTurret(r.mesh, p.color || 0x3366cc);
         scene.add(r.mesh);
         r.carType = p.carType; r.color = p.color; r.turret = !!p.tur;
       }
@@ -2429,22 +2668,30 @@ function connect() {
     addKillFeed(`🚀 <b style="color:#ff6b6b;">${escapeHtml(d.fromName)}</b> launched a MISSILE at ${escapeHtml(d.targetName)}`);
   });
 
-  // ---- ADMIN: server reset my account back to fresh-install state ----
+  // ---- ADMIN MISSILE: I just got blown up. Coins are NOT touched. ----
+  socket.on('missileHit', (d) => {
+    if (!gameStarted) return;
+    bigExplosion(player.pos.x, player.pos.y + 1, player.pos.z);
+    explosionSound();
+    // SENT TO SPACE — massive upward velocity + crazy spin
+    player._vy = 95;
+    player.rollVel  += (Math.random()-0.5) * 30;
+    player.pitchVel += (Math.random()-0.5) * 26;
+    player.vel.x *= 0.4; player.vel.y *= 0.4;
+    player.health = 0;
+    flashHit();
+    showFlipMsg('🚀 SENT TO SPACE');
+    // long enough to actually launch off-screen before respawn
+    setTimeout(()=>{ if (gameStarted) { respawn(); hideFlipMsg(); } }, 2200);
+    addKillFeed(`🚀 You were missiled${d && d.from ? ' by ' + escapeHtml(d.from) : ''}`);
+  });
+
+  // ---- ADMIN RESET: wipe coins/upgrades back to fresh-install state ----
   socket.on('resetAccount', (d) => {
     resetAccount();
-    if (gameStarted) {
-      // dramatic exit — but lightweight so the victim's frame doesn't stall
-      bigExplosion(player.pos.x, player.pos.y + 1, player.pos.z);
-      explosionSound();
-      player._vy = 22;
-      player.rollVel  += (Math.random()-0.5) * 10;
-      player.pitchVel += (Math.random()-0.5) * 8;
-      player.health = 0;
-      flashHit();
-      // short freeze, then respawn fresh
-      setTimeout(()=>{ if (gameStarted) { respawn(); rebuildSelfMesh(); } }, 350);
-    }
-    addKillFeed(`💀 You were reset${d && d.from ? ' by ' + escapeHtml(d.from) : ''} — coins/upgrades wiped`);
+    flashHit();
+    if (gameStarted) rebuildSelfMesh();
+    addKillFeed(`💀 Your account was reset${d && d.from ? ' by ' + escapeHtml(d.from) : ''}`);
   });
 
   // ---- Someone destroyed an NPC car / pedestrian — render the blast ----
@@ -2500,14 +2747,14 @@ function sendInput() {
     steer: player.steer, braking: player.braking,
     nitro: (input.nitro && player.nitro>0)||player.boostTimer>0,
     damage: player.damage, horn: input.horn,
-    turret: account.turret, health: player.health,
+    turret: account.turret || !!CAR_TYPES[player.carType]?.autoTurret, health: player.health,
   });
 }
 
 function ensureRemotePlayer(p) {
   if (remotePlayers.has(p.id)) return;
   const mesh = buildCarMesh(p.carType||'sports', p.color||0x3366cc);
-  if (p.tur) addTurret(mesh, p.color||0x3366cc);
+  if (p.tur && !CAR_TYPES[p.carType]?.autoTurret) addTurret(mesh, p.color||0x3366cc);
   scene.add(mesh);
   // name tag with a small health bar
   const tag = document.createElement('div');
@@ -2649,7 +2896,7 @@ const offlineSim = {
     }
   },
 
-  knock(id, vx, vz, vy, isShot) {
+  knock(id, vx, vz, vy, isShot, dmg) {
     const n = this.npcs.find(o => o.id === id);
     if (!n) return;
     n.knockVx += vx; n.knockVz += vz; n.knockVy += Math.max(0, vy);
@@ -2657,7 +2904,7 @@ const offlineSim = {
     n.rollVel  += (Math.random()-0.5) * 7;
     n.pitchVel += (Math.random()-0.5) * 5;
     if (isShot) {
-      n.hp -= 34;
+      n.hp -= (dmg || 34);
       if (n.hp <= 0) this.destroyNpc(n);
     }
   },
@@ -2728,7 +2975,7 @@ function startOfflineGame() {
 
   if (player.mesh) scene.remove(player.mesh);
   player.mesh = buildCarMesh(player.carType, player.color);
-  if (account.turret) addTurret(player.mesh, player.color);
+  if (account.turret && !CAR_TYPES[player.carType]?.autoTurret) addTurret(player.mesh, player.color);
   scene.add(player.mesh);
 
   player.pos.set(line(1) + Math.random()*4, 0, line(1)+4);
@@ -2932,9 +3179,12 @@ let beingControlled = false, controlInputData = null, lastControlMs = 0;
    COMBAT — turret firing, damage, explosions, kill feed
    ===================================================================== */
 function fire() {
-  if (!account.turret || !gameStarted || player.flipped || player.trapped || paused || garageOpen) return;
+  // tanks always have their cannon — other cars need the bought turret
+  const isTank = CAR_TYPES[player.carType] && CAR_TYPES[player.carType].autoTurret;
+  if (!isTank && !account.turret) return;
+  if (!gameStarted || player.flipped || player.trapped || paused || garageOpen) return;
   if (player.fireCooldown > 0) return;
-  player.fireCooldown = 0.28;
+  player.fireCooldown = isTank ? 0.55 : 0.28;     // tank shells are slower-firing
   const aim = player.heading;                  // shots go where the vehicle points
   const ox = player.pos.x, oy = player.pos.y + 1.6, oz = player.pos.z;
   shootSound();
@@ -2966,21 +3216,25 @@ function fire() {
   if (did) consider(did, 'd', pedMeshes.get(did).target);
   if (pid) consider(pid, 'p', remotePlayers.get(pid).target);
 
-  // visible bullet — once it lands, register the hit
+  // tank shells: bigger bullet, bigger boom, more damage
+  const dmgPlayer = isTank ? 28 : 12;
+  const dmgNpc    = isTank ? 100 : 34;   // 1-shot kills npcs
+  const explodeFn = isTank ? (x,y,z)=>{ bigExplosion(x,y,z); explosionSound(); } : smallExplosion;
+  const shellSize = isTank ? 2.4 : 1.0;
   spawnBullet(ox, oy, oz, aim, bd < 1e9 ? bd : 140, (hx, hy, hz) => {
     if (bestKind === 'p') {
-      smallExplosion(hx, hy, hz);
-      if (connected) socket.emit('hitPlayer', { targetId:bestId, dmg:12 });
+      explodeFn(hx, hy, hz);
+      if (connected) socket.emit('hitPlayer', { targetId:bestId, dmg:dmgPlayer });
     } else if (bestKind === 'n') {
-      smallExplosion(hx, hy, hz);
-      if (offlineMode) offlineSim.knock(bestId, dirx*45, dirz*45, 12, true);
-      else if (connected) socket.emit('hitNpc', { id:bestId, dmg:34, dx:dirx, dz:dirz });
+      explodeFn(hx, hy, hz);
+      if (offlineMode) offlineSim.knock(bestId, dirx*60, dirz*60, isTank?20:12, true, dmgNpc);
+      else if (connected) socket.emit('hitNpc', { id:bestId, dmg:dmgNpc, dx:dirx, dz:dirz });
     } else if (bestKind === 'd') {
-      smallExplosion(hx, 1, hz);
+      explodeFn(hx, 1, hz);
       if (offlineMode) offlineSim.killPed(bestId);
       else if (connected) socket.emit('hitPed', { id:bestId });
     }
-  });
+  }, shellSize);
 }
 function explode(x, y, z) {
   // upgraded: a real bang, not just smoke
@@ -2988,28 +3242,39 @@ function explode(x, y, z) {
   explosionSound();
 }
 
-/* ---------- MISSILE (admin) ---------- */
+/* ---------- MISSILE (admin) — large + slow so EVERYONE can see it ---------- */
 function buildMissileMesh() {
   const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 2.6, 12),
-    new THREE.MeshStandardMaterial({ color:0xdddddd, metalness:0.5, roughness:0.4, emissive:0x333333 }));
+  // body — chunky so it's visible from far away
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 5.0, 14),
+    new THREE.MeshStandardMaterial({ color:0xe8eef7, metalness:0.6, roughness:0.4, emissive:0x444444 }));
   body.rotation.x = Math.PI/2; g.add(body);
-  // nose cone
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.35, 0.9, 10),
-    new THREE.MeshStandardMaterial({ color:0xff4444, emissive:0xff2200, emissiveIntensity:0.6 }));
-  nose.rotation.x = -Math.PI/2; nose.position.z = -1.6; g.add(nose);
-  // fins
-  const finMat = new THREE.MeshStandardMaterial({ color:0x444444 });
+  // red nose cone (big)
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.7, 1.8, 14),
+    new THREE.MeshStandardMaterial({ color:0xff3333, emissive:0xff1100, emissiveIntensity:0.9 }));
+  nose.rotation.x = -Math.PI/2; nose.position.z = -3.1; g.add(nose);
+  // warning stripes around the body
+  for (const z of [-1.5, 0, 1.5]) {
+    const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.3, 14),
+      new THREE.MeshStandardMaterial({ color:0xff8800, emissive:0xff4400, emissiveIntensity:0.5 }));
+    stripe.rotation.x = Math.PI/2; stripe.position.z = z; g.add(stripe);
+  }
+  // 4 fins around the tail
+  const finMat = new THREE.MeshStandardMaterial({ color:0x222222 });
   for (let i=0;i<4;i++){
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.7, 0.7), finMat);
-    fin.position.set(0,0,1.1); fin.rotation.z = i*Math.PI/2;
-    fin.position.y = Math.cos(i*Math.PI/2)*0.4;
-    fin.position.x = Math.sin(i*Math.PI/2)*0.4;
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.4, 1.2), finMat);
+    fin.position.set(0,0,2.0); fin.rotation.z = i*Math.PI/2;
+    fin.position.y = Math.cos(i*Math.PI/2)*0.7;
+    fin.position.x = Math.sin(i*Math.PI/2)*0.7;
     g.add(fin);
   }
-  // engine glow
-  const glow = new THREE.PointLight(0xff8822, 4, 12, 2);
-  glow.position.set(0,0,1.3); g.add(glow);
+  // bright orange engine glow at the tail
+  const glow = new THREE.PointLight(0xff8822, 8, 20, 2);
+  glow.position.set(0,0,2.5); g.add(glow);
+  // exhaust nozzle
+  const nozzle = new THREE.Mesh(new THREE.ConeGeometry(0.6, 1.0, 12),
+    new THREE.MeshStandardMaterial({ color:0xffaa44, emissive:0xff7722, emissiveIntensity:1.0 }));
+  nozzle.rotation.x = Math.PI/2; nozzle.position.z = 2.8; g.add(nozzle);
   return g;
 }
 
@@ -3045,9 +3310,10 @@ function updateMissiles(dt) {
     const dx = tp.x - x, dz = tp.z - z;
     m.mesh.rotation.y = Math.atan2(dx, dz);
     m.mesh.rotation.x = -Math.atan2(hump - (Math.sin((u-0.01)*Math.PI)*22), 1) - 0.3;
-    // trail smoke
-    if (Math.random() < 0.9) emitSmoke(x, yBase + hump - 0.2, z);
-    if (Math.random() < 0.4) emitFire(x, yBase + hump - 0.2, z, 1.5, 0.4);
+    // beefy trail so the missile is impossible to miss
+    emitSmoke(x, yBase + hump - 0.4, z);
+    if (Math.random() < 0.6) emitSmoke(x + (Math.random()-0.5)*1.5, yBase + hump - 0.4, z + (Math.random()-0.5)*1.5);
+    if (Math.random() < 0.7) emitFire(x, yBase + hump - 0.4, z, 2.0, 0.5);
     if (u >= 1) {
       scene.remove(m.mesh);
       bigExplosion(tp.x, tp.y, tp.z);
@@ -3122,6 +3388,10 @@ function addKillFeed(html) {
    GAME START / TEARDOWN
    ===================================================================== */
 function onGameStart(d) {
+  // resize the world if the lobby uses a different preset (e.g. huge public server)
+  if (d && d.world && d.world.blocks && d.world.spacing) {
+    setWorldSize(d.world.blocks, d.world.spacing);
+  }
   // rebuild the world from the server's seed so everyone shares the same map
   buildWorld(d && d.world ? d.world.seed : undefined);
 
@@ -3135,7 +3405,7 @@ function onGameStart(d) {
   // build self car
   if (player.mesh) scene.remove(player.mesh);
   player.mesh = buildCarMesh(player.carType, player.color);
-  if (account.turret) addTurret(player.mesh, player.color);
+  if (account.turret && !CAR_TYPES[player.carType]?.autoTurret) addTurret(player.mesh, player.color);
   scene.add(player.mesh);
 
   // spawn position
@@ -3229,7 +3499,8 @@ function applyCarChange() {
   const pos = player.pos.clone(), h = player.heading;
   if (player.mesh) scene.remove(player.mesh);
   player.mesh = buildCarMesh(player.carType, player.color);
-  if (account.turret) addTurret(player.mesh, player.color);
+  // tanks have their cannon built in — don't bolt a redundant turret on top
+  if (account.turret && !CAR_TYPES[player.carType]?.autoTurret) addTurret(player.mesh, player.color);
   scene.add(player.mesh);
   player.mesh.position.copy(pos); player.mesh.rotation.y = h;
   applyDamageVisual();
