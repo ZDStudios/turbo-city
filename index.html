@@ -806,6 +806,11 @@ const activeMissiles = [];               // {mesh, trailIdx, fromPos, toId, t0, 
 const bouncePads = [];                   // {pos, mesh, cooldown}
 const coinPickups = [];                  // {pos, mesh, cooldown}
 
+// Rocket ship the player can drive into to launch into space.
+let rocketShip = null;                   // { group, basePos:{x,z}, baseY:0 } visual mesh
+const activeLaunches = new Map();        // playerId -> { t0, x, z, baseY, dur }
+let myLaunch = null;                     // shortcut to my own launch, if any
+
 // audio
 let audioCtx = null, engineOsc = null, engineGain = null;
 
@@ -909,6 +914,7 @@ function buildWorld(seed) {
   if (worldGroup) { scene.remove(worldGroup); }
   worldGroup = new THREE.Group(); scene.add(worldGroup);
   buildingBoxes.length = 0; boostPads.length = 0; ramps.length = 0; bouncePads.length = 0; coinPickups.length = 0;
+  rocketShip = null; activeLaunches.clear(); myLaunch = null;
   mapRng = makeRng(((seed == null ? 1 : seed) | 0) >>> 0);
   const R = mapRng;
 
@@ -1404,6 +1410,177 @@ function animateBouncePads(dt) {
   }
 }
 
+/* =====================================================================
+   ROCKET SHIP — server tells us where it lives via gameStart.rocket.
+   Drive into it to launch (handled in updatePhysics).
+   ===================================================================== */
+function buildRocketShip(x, z) {
+  // teardown old rocket if rebuilding
+  if (rocketShip) { scene.remove(rocketShip.group); rocketShip = null; }
+  const g = new THREE.Group();
+  g.position.set(x, 0, z);
+
+  // launch pad
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(8, 9, 0.6, 20),
+    new THREE.MeshStandardMaterial({ color:0x444444, roughness:0.9 }));
+  pad.position.y = 0.3; g.add(pad);
+  // hazard rings on the pad
+  const hazard = new THREE.Mesh(new THREE.RingGeometry(6, 7.5, 32),
+    new THREE.MeshStandardMaterial({ color:0xffd23f, side:THREE.DoubleSide }));
+  hazard.rotation.x = -Math.PI/2; hazard.position.y = 0.61; g.add(hazard);
+
+  // a sub-group for the rocket so we can lift IT up during launch
+  const rocket = new THREE.Group();
+  rocket.position.y = 0;
+  // body
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.5, 16, 18),
+    new THREE.MeshStandardMaterial({ color:0xeeeeee, metalness:0.5, roughness:0.3 }));
+  body.position.y = 8.5; body.castShadow = true; rocket.add(body);
+  // red bands
+  for (const y of [4.5, 10, 13]) {
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(2.25, 2.25, 0.7, 18),
+      new THREE.MeshStandardMaterial({ color:0xff3344, emissive:0x551111 }));
+    band.position.y = y; rocket.add(band);
+  }
+  // window
+  const win = new THREE.Mesh(new THREE.SphereGeometry(0.8, 12, 8),
+    new THREE.MeshStandardMaterial({ color:0x88ccff, emissive:0x224466, emissiveIntensity:0.4, metalness:0.3, roughness:0.1 }));
+  win.position.set(0, 11.5, 2.0); rocket.add(win);
+  // "NASA" stripe text proxy
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(3, 0.6, 0.1),
+    new THREE.MeshStandardMaterial({ color:0x1a3a8a }));
+  stripe.position.set(0, 6, 2.3); rocket.add(stripe);
+  // nose cone
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(2.2, 4.5, 18),
+    new THREE.MeshStandardMaterial({ color:0xff3344 }));
+  nose.position.y = 18.75; nose.castShadow = true; rocket.add(nose);
+  // 4 fins
+  const finMat = new THREE.MeshStandardMaterial({ color:0xff3344 });
+  for (let i=0;i<4;i++) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.25, 3.6, 3.2), finMat);
+    const ang = i * Math.PI/2;
+    fin.position.set(Math.sin(ang) * 2.6, 2.2, Math.cos(ang) * 2.6);
+    fin.rotation.y = ang;
+    fin.castShadow = true; rocket.add(fin);
+  }
+  // engine nozzle
+  const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 2.0, 1.6, 14),
+    new THREE.MeshStandardMaterial({ color:0x222222, metalness:0.7, roughness:0.4 }));
+  nozzle.position.y = 0.5; rocket.add(nozzle);
+  g.add(rocket);
+
+  // gantry tower next to the rocket (atmosphere)
+  const towMat = new THREE.MeshStandardMaterial({ color:0x666666, roughness:0.8 });
+  for (const y of [3, 7, 11, 15]) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 6), towMat);
+    bar.position.set(4.5, y, 0); g.add(bar);
+  }
+  const pole = new THREE.Mesh(new THREE.BoxGeometry(0.4, 18, 0.4), towMat);
+  pole.position.set(4.5, 9, 3); g.add(pole);
+  const pole2 = pole.clone(); pole2.position.set(4.5, 9, -3); g.add(pole2);
+
+  // glowing "LAUNCH" sign on the pad rim
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(6, 1.2, 0.3),
+    new THREE.MeshStandardMaterial({ color:0xff6600, emissive:0xff3300, emissiveIntensity:1 }));
+  sign.position.set(0, 1.5, 8); g.add(sign);
+
+  scene.add(g);
+  rocketShip = { group: g, rocket, basePos: { x, z }, baseY: 0, signMat: sign.material };
+}
+
+const LAUNCH_DUR = 8.5;       // seconds the launch lasts before ejection
+function startLaunch(id, x, z, t0Ms) {
+  if (activeLaunches.has(id)) return;
+  const launch = { t0: t0Ms / 1000, x, z, baseY: 0, dur: LAUNCH_DUR };
+  activeLaunches.set(id, launch);
+  if (id === selfId) {
+    myLaunch = launch;
+    showFlipMsg('🚀 LAUNCH SEQUENCE INITIATED');
+    rocketIgnitionSound();
+    // freeze car velocity at launch
+    player.vel.set(0, 0);
+    player.pos.x = x; player.pos.z = z;
+    player.heading = Math.PI; // face forward away from the pad cosmetically
+    player.tumbleRoll = 0; player.tumblePitch = 0;
+    player.rollVel = 0; player.pitchVel = 0;
+    player.flipped = false; player.invuln = LAUNCH_DUR + 2;
+  }
+}
+function endLaunch(id) {
+  const L = activeLaunches.get(id);
+  if (!L) return;
+  activeLaunches.delete(id);
+  if (id === selfId) {
+    myLaunch = null;
+    hideFlipMsg();
+    // eject: high in the sky, falling — give a tiny parachute via slow vy
+    player._vy = -8;
+    // a coin reward for completing a launch
+    addCoins(120); saveAccount(); updateCoinsUI();
+  }
+}
+function rocketProgress(L, nowSec) {
+  return Math.min(1, (nowSec - L.t0) / L.dur);
+}
+function rocketAltitudeAt(u) {
+  // ease-in cubic so it really does get "faster and faster"
+  return 8 + Math.pow(u, 1.6) * 280;   // up to ~290m
+}
+function updateRocketLaunches(dt) {
+  if (rocketShip && rocketShip.signMat) {
+    rocketShip.signMat.emissiveIntensity = 0.7 + Math.sin(clock.elapsedTime*4)*0.4;
+  }
+  const now = performance.now() / 1000;
+  for (const [id, L] of activeLaunches) {
+    const u = rocketProgress(L, now);
+    const y = rocketAltitudeAt(u);
+    // belching flames + smoke at the rocket's base (visible from anywhere)
+    for (let i=0;i<3;i++) {
+      emitFire(L.x + (Math.random()-0.5)*2, Math.max(0, y - 4), L.z + (Math.random()-0.5)*2, 6, 0.9);
+    }
+    emitSmoke(L.x + (Math.random()-0.5)*5, Math.max(0, y - 5), L.z + (Math.random()-0.5)*5);
+    emitSmoke(L.x + (Math.random()-0.5)*5, 0.5, L.z + (Math.random()-0.5)*5);
+
+    if (id === selfId) {
+      // override physics — pin to pad XZ, ride the rocket up
+      player.pos.x = L.x; player.pos.z = L.z;
+      player.pos.y = y;
+      player.vel.set(0, 0);
+      player._vy = 0;
+      player.speed = u * 200;            // speedo climbs as we accelerate
+      player.invuln = 2;
+      // gentle spin during ascent for flair
+      player.tumbleRoll += dt * 0.5;
+    }
+    if (u >= 1) { endLaunch(id); }
+  }
+  // animate the rocket mesh too — but only if MY launch is using this pad
+  if (rocketShip) {
+    let activeLocal = null;
+    for (const L of activeLaunches.values()) {
+      if (L.x === rocketShip.basePos.x && L.z === rocketShip.basePos.z) { activeLocal = L; break; }
+    }
+    if (activeLocal) {
+      const u = rocketProgress(activeLocal, now);
+      rocketShip.rocket.position.y = rocketAltitudeAt(u) - 8;
+    } else {
+      // reset to rest position
+      rocketShip.rocket.position.y += (0 - rocketShip.rocket.position.y) * Math.min(1, dt*2);
+    }
+  }
+}
+function rocketIgnitionSound() {
+  if (!audioCtx) return;
+  // rumbling low boom + sustained roar
+  const noise = audioCtx.createBuffer(1, audioCtx.sampleRate*2.5, audioCtx.sampleRate);
+  const data = noise.getChannelData(0);
+  for (let i=0;i<data.length;i++) data[i] = (Math.random()*2-1) * (0.8 - i/data.length*0.5);
+  const src = audioCtx.createBufferSource(); src.buffer=noise;
+  const g = audioCtx.createGain(); g.gain.value=0.18;
+  const filt = audioCtx.createBiquadFilter(); filt.type='lowpass'; filt.frequency.value=400;
+  src.connect(filt); filt.connect(g); g.connect(audioCtx.destination); src.start();
+}
+
 /* stunt ramps (positions vary by seed) */
 function buildRamps(R) {
   R = R || Math.random;
@@ -1752,6 +1929,9 @@ function playHorn() {
    CAR PHYSICS (client-side)
    ===================================================================== */
 function updatePhysics(dt) {
+  // while we're riding the rocket, updateRocketLaunches owns our position —
+  // skip normal physics so collisions/gravity don't fight it.
+  if (myLaunch) return;
   const def = effectiveStats();
   if (def.fly) { updatePlanePhysics(dt, def); return; }
   // gripper cars climb building walls. handled BEFORE normal AABB collision so
@@ -1960,6 +2140,22 @@ function updatePhysics(dt) {
       player.pitchVel += (Math.random()-0.5) * 2;
       player.rollVel  += (Math.random()-0.5) * 2;
       bounceSound();
+    }
+  }
+  // ---- rocket ship pad — drive in to TAKE OFF ----
+  if (rocketShip && !myLaunch) {
+    const dx = player.pos.x - rocketShip.basePos.x;
+    const dz = player.pos.z - rocketShip.basePos.z;
+    if (dx*dx + dz*dz < 49 && player.pos.y < 4) {
+      // request the launch — server validates + broadcasts back to everyone
+      if (offlineMode) {
+        startLaunch(selfId || 'offline-self', rocketShip.basePos.x, rocketShip.basePos.z, performance.now());
+      } else if (connected) {
+        socket.emit('rocketLaunch');
+        // small local optimism so the player gets locked to the pad immediately;
+        // the server's broadcast will overwrite/confirm it
+        startLaunch(selfId, rocketShip.basePos.x, rocketShip.basePos.z, performance.now());
+      }
     }
   }
 
@@ -2316,6 +2512,7 @@ function animate() {
     animateBoostPads(dt);
     animateBouncePads(dt);
     updateCoinPickups(dt);
+    updateRocketLaunches(dt);
 
     // send input ~60Hz
     if (performance.now() - lastInputSent > 1000/CONFIG.INPUT_HZ) {
@@ -2361,12 +2558,22 @@ function syncPlayerMesh(dt) {
    MULTIPLAYER INTERPOLATION
    ===================================================================== */
 function interpolateRemotes(dt) {
+  const nowSec = performance.now() / 1000;
   for (const [id, r] of remotePlayers) {
     if (!r.target) continue;
     if (r.fading) {
       r.opacity -= dt*0.8;
       r.mesh.traverse(o=>{ if (o.material){ o.material.transparent=true; o.material.opacity=Math.max(0,r.opacity);} });
       if (r.opacity<=0){ scene.remove(r.mesh); if(r.tagEl) r.tagEl.remove(); remotePlayers.delete(id); }
+      continue;
+    }
+    // If this remote is currently riding the rocket, override their position
+    // with the rocket trajectory (matches what their own client is doing).
+    const launch = activeLaunches.get(id);
+    if (launch) {
+      const u = rocketProgress(launch, nowSec);
+      r.mesh.position.set(launch.x, rocketAltitudeAt(u), launch.z);
+      r.mesh.rotation.set(0, Math.PI, u * 0.3);  // gentle ascent spin
       continue;
     }
     const k = Math.min(1, dt*10);
@@ -2694,6 +2901,13 @@ function connect() {
     addKillFeed(`💀 Your account was reset${d && d.from ? ' by ' + escapeHtml(d.from) : ''}`);
   });
 
+  // ---- ROCKET LAUNCH (someone — possibly me — drove into the rocket pad) ----
+  socket.on('rocketLaunch', (d) => {
+    if (!gameStarted || !d) return;
+    startLaunch(d.id, d.x, d.z, performance.now());
+    addKillFeed(`🚀 <b style="color:#ff6600;">${escapeHtml(d.name || 'A pilot')}</b> launched into space!`);
+  });
+
   // ---- Someone destroyed an NPC car / pedestrian — render the blast ----
   socket.on('npcDestroyed', (d) => {
     if (!gameStarted || !d) return;
@@ -2964,6 +3178,11 @@ function startOfflineGame() {
   // fresh random map each solo session
   const seed = (Math.random()*1e9)|0;
   buildWorld(seed);
+
+  // offline rocket: tuck it in a corner of the map
+  const d = WORLD.half - 30;
+  const corner = [[ -d,-d ],[ d,-d ],[ -d,d ],[ d,d ]][Math.floor(Math.random()*4)];
+  buildRocketShip(corner[0], corner[1]);
 
   setTimeOfDay(lobbyMeta.timeOfDay || 'day');
   setWeather(lobbyMeta.weather || 'clear');
@@ -3394,6 +3613,9 @@ function onGameStart(d) {
   }
   // rebuild the world from the server's seed so everyone shares the same map
   buildWorld(d && d.world ? d.world.seed : undefined);
+
+  // rocket position comes from the server (matches every client)
+  if (d && d.rocket) buildRocketShip(d.rocket.x, d.rocket.z);
 
   // apply lobby environment settings
   setTimeOfDay(lobbyMeta?.timeOfDay || 'day');
