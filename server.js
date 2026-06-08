@@ -67,12 +67,30 @@ const io = new Server(server, {
 // ---------------------------------------------------------------------
 // World definition (MUST stay in sync with the client's world builder)
 // The world is a square grid city. Roads run along every grid line.
+//
+// Each lobby has its own world dimensions (set when the lobby is created
+// from worldSize: 'small' | 'medium' | 'large' | 'huge'). The persistent
+// public server uses 'huge' for a much bigger open-world map.
 // ---------------------------------------------------------------------
-const WORLD = {
-  blocks: 6,        // number of city blocks per side
-  spacing: 90,      // distance between road center-lines
+const WORLD_SIZE_PRESETS = {
+  small:  { blocks: 4,  spacing: 90 },
+  medium: { blocks: 6,  spacing: 90 },
+  large:  { blocks: 9,  spacing: 90 },
+  huge:   { blocks: 14, spacing: 95 },   // ~1330 across — public server uses this
+};
+function worldFor(lobby) {
+  const p = WORLD_SIZE_PRESETS[lobby.worldSize] || WORLD_SIZE_PRESETS.medium;
+  const half = (p.blocks * p.spacing) / 2;
+  return {
+    blocks: p.blocks,
+    spacing: p.spacing,
+    half,
+    line: (i) => -half + i * p.spacing,
+  };
+}
+// Legacy/default used by features that don't yet take a lobby (race checkpoints).
+const WORLD = { ...WORLD_SIZE_PRESETS.medium,
   get half() { return (this.blocks * this.spacing) / 2; },
-  // road line coordinate for grid index i (0..blocks)
   line(i) { return -this.half + i * this.spacing; },
 };
 
@@ -165,8 +183,9 @@ function lobbyMetaPayload(lobby) {
 }
 
 // Race checkpoint loop around the inner city ring (matches client roads)
-function buildRaceCheckpoints() {
-  const a = WORLD.line(1), b = WORLD.line(WORLD.blocks - 1), m = (a + b) / 2;
+function buildRaceCheckpoints(lobby) {
+  const W = worldFor(lobby);
+  const a = W.line(1), b = W.line(W.blocks - 1), m = (a + b) / 2;
   return [
     { x: a, z: a }, { x: m, z: a }, { x: b, z: a }, { x: b, z: m },
     { x: b, z: b }, { x: m, z: b }, { x: a, z: b }, { x: a, z: m },
@@ -174,9 +193,10 @@ function buildRaceCheckpoints() {
 }
 
 function gameStartPayload(lobby) {
+  const W = worldFor(lobby);
   return {
     meta: lobbyMetaPayload(lobby),
-    world: { blocks: WORLD.blocks, spacing: WORLD.spacing, seed: lobby.mapSeed },
+    world: { blocks: W.blocks, spacing: W.spacing, seed: lobby.mapSeed },
     npc: npcPayload(lobby),
     mode: lobby.mode || 'open',
     cheats: !!lobby.cheats,
@@ -192,9 +212,10 @@ function gameStartPayload(lobby) {
 // Build a set of rectangular loop paths along the road grid. NPC cars
 // follow these waypoint loops; pedestrians walk shorter sidewalk loops.
 
-function buildNpcPaths() {
+function buildNpcPaths(W) {
+  W = W || WORLD;
   const paths = [];
-  const b = WORLD.blocks;
+  const b = W.blocks;
   // Perimeter loop + a few inner rectangular loops between grid lines.
   const rects = [
     [0, 0, b, b],
@@ -202,9 +223,14 @@ function buildNpcPaths() {
     [0, 1, b - 1, b],
     [1, 0, b, b - 1],
   ];
+  // bigger maps get extra middle loops so NPCs aren't all bunched around the rim
+  if (b >= 9) {
+    const m = Math.floor(b/2);
+    rects.push([m-2, m-2, m+2, m+2], [m-3, m-1, m+1, m+3]);
+  }
   for (const [i0, j0, i1, j1] of rects) {
-    const x0 = WORLD.line(i0), z0 = WORLD.line(j0);
-    const x1 = WORLD.line(i1), z1 = WORLD.line(j1);
+    const x0 = W.line(i0), z0 = W.line(j0);
+    const x1 = W.line(i1), z1 = W.line(j1);
     // clockwise loop of 4 corner waypoints (lane offset for right-hand drive feel)
     const o = 3.5;
     paths.push([
@@ -217,22 +243,24 @@ function buildNpcPaths() {
   return paths;
 }
 
-const NPC_PATHS = buildNpcPaths();
-
 function spawnNpcs(lobby) {
+  const W = worldFor(lobby);
+  lobby._world = W;
+  lobby._npcPaths = buildNpcPaths(W);
   const density = lobby.trafficDensity || 'medium';
-  const count = density === 'low' ? 10 : density === 'high' ? 28 : 18;
+  let count = density === 'low' ? 10 : density === 'high' ? 28 : 18;
+  if (W.blocks >= 9) count = Math.round(count * 2);   // bigger maps -> more traffic
   const npcs = [];
   const colors = [0x3366cc, 0xcc3333, 0x33aa55, 0xddaa22, 0x9933cc, 0x444444, 0xdddddd];
   for (let i = 0; i < count; i++) {
-    const path = NPC_PATHS[i % NPC_PATHS.length];
+    const path = lobby._npcPaths[i % lobby._npcPaths.length];
     const seg = Math.floor(Math.random() * path.length);
     const a = path[seg];
     const bpt = path[(seg + 1) % path.length];
     const t = Math.random();
     npcs.push({
       id: 'npc_' + i,
-      path: i % NPC_PATHS.length,
+      path: i % lobby._npcPaths.length,
       seg,
       t,
       x: a.x + (bpt.x - a.x) * t,
@@ -254,14 +282,16 @@ function spawnNpcs(lobby) {
 }
 
 function spawnPedestrians(lobby) {
-  const count = 12;
+  const W = lobby._world || worldFor(lobby);
+  let count = 12;
+  if (W.blocks >= 9) count = 24;
   const peds = [];
   for (let i = 0; i < count; i++) {
     // pedestrians loop a small rectangle near a random block corner
-    const gi = 1 + Math.floor(Math.random() * (WORLD.blocks - 1));
-    const gj = 1 + Math.floor(Math.random() * (WORLD.blocks - 1));
-    const cx = WORLD.line(gi);
-    const cz = WORLD.line(gj);
+    const gi = 1 + Math.floor(Math.random() * (W.blocks - 1));
+    const gj = 1 + Math.floor(Math.random() * (W.blocks - 1));
+    const cx = W.line(gi);
+    const cz = W.line(gj);
     const r = 8;
     const loop = [
       { x: cx - r, z: cz - r },
@@ -292,10 +322,12 @@ function dist2(ax, az, bx, bz) {
 }
 
 function stepNpcs(lobby) {
+  const W = lobby._world || worldFor(lobby);
+  const paths = lobby._npcPaths || buildNpcPaths(W);
   const npcs = lobby.npcs;
   for (let i = 0; i < npcs.length; i++) {
     const n = npcs[i];
-    const path = NPC_PATHS[n.path];
+    const path = paths[n.path];
     const target = path[(n.seg + 1) % path.length];
 
     // --- simple AI: slow down if a vehicle is close ahead ---
@@ -318,8 +350,8 @@ function stepNpcs(lobby) {
     }
 
     // intersection slow-down (near a grid crossing)
-    const nearLineX = Math.abs((((n.x + WORLD.half) % WORLD.spacing) + WORLD.spacing) % WORLD.spacing) < 6;
-    const nearLineZ = Math.abs((((n.z + WORLD.half) % WORLD.spacing) + WORLD.spacing) % WORLD.spacing) < 6;
+    const nearLineX = Math.abs((((n.x + W.half) % W.spacing) + W.spacing) % W.spacing) < 6;
+    const nearLineZ = Math.abs((((n.z + W.half) % W.spacing) + W.spacing) % W.spacing) < 6;
     if (nearLineX && nearLineZ) slow = slow || Math.random() < 0.02;
 
     const desired = slow ? n.maxSpeed * 0.25 : n.maxSpeed;
@@ -606,7 +638,7 @@ io.on('connection', (socket) => {
     // set up race state if this is a race lobby
     if (lobby.mode === 'race') {
       lobby.race = {
-        checkpoints: buildRaceCheckpoints(),
+        checkpoints: buildRaceCheckpoints(lobby),
         laps: 3,
         startAt: Date.now() + 5000, // 5s countdown
         finishers: 0,
@@ -634,7 +666,8 @@ io.on('connection', (socket) => {
     if (!p) return;
     // light validation / clamping to stop egregious cheating/teleporting
     if (!s || typeof s.x !== 'number' || typeof s.z !== 'number') return;
-    const lim = WORLD.half + 60;
+    const W = lobby._world || worldFor(lobby);
+    const lim = W.half + 60;
     p.state = {
       x: clampNum(s.x, -lim, lim),
       y: clampNum(s.y || 0, -40, 400),
@@ -724,7 +757,7 @@ io.on('connection', (socket) => {
         id: n.id, x: n.x, y: n.y || 0, z: n.z,
       });
       // respawn on a fresh waypoint after a short delay (so explosion plays)
-      const path = NPC_PATHS[n.path];
+      const path = (lobby._npcPaths || buildNpcPaths(worldFor(lobby)))[n.path];
       const a = path[0], b = path[1];
       setTimeout(() => {
         if (!lobbies.has(lobby.id)) return;
@@ -747,9 +780,10 @@ io.on('connection', (socket) => {
     if (!p) return;
     io.to(lobby.id).emit('pedHit', { id: p.id, x: p.x, y: 0, z: p.z });
     // respawn elsewhere
-    const gi = 1 + Math.floor(Math.random() * (WORLD.blocks - 1));
-    const gj = 1 + Math.floor(Math.random() * (WORLD.blocks - 1));
-    const cx = WORLD.line(gi), cz = WORLD.line(gj), r = 8;
+    const W = lobby._world || worldFor(lobby);
+    const gi = 1 + Math.floor(Math.random() * (W.blocks - 1));
+    const gj = 1 + Math.floor(Math.random() * (W.blocks - 1));
+    const cx = W.line(gi), cz = W.line(gj), r = 8;
     p.loop = [
       { x: cx - r, z: cz - r }, { x: cx + r, z: cz - r },
       { x: cx + r, z: cz + r }, { x: cx - r, z: cz + r },
@@ -823,11 +857,11 @@ io.on('connection', (socket) => {
       const host = lobby.players.get(socket.id);
       const target = lobby.players.get(d.targetId);
       if (!target || !target.state) return;
-      // origin: just above the host (or sky if host has no state yet)
+      // origin: high above the host (or above the target if host has no state)
       const ox = host && host.state ? host.state.x : target.state.x;
       const oz = host && host.state ? host.state.z : target.state.z;
-      const oy = (host && host.state ? host.state.y : 0) + 40;
-      const flightMs = 1600;          // ~1.6s of arcing flight everyone watches
+      const oy = (host && host.state ? host.state.y : 0) + 80;
+      const flightMs = 2600;          // longer so everyone can clearly see it arcing
       io.to(lobby.id).emit('missile', {
         from: socket.id,
         fromName: hostName,
@@ -837,12 +871,12 @@ io.on('connection', (socket) => {
         flightMs,
         t: Date.now(),
       });
-      // also reset the target's account once the missile lands (delayed so the
-      // explosion fires AT the same moment the visual hits, not before).
+      // when it lands: tell the target to play the death/space-launch FX
+      // (NO account reset — coins/upgrades are preserved unless admin uses 'reset')
       setTimeout(() => {
         if (!lobbies.has(lobby.id)) return;
         if (!lobby.players.has(d.targetId)) return;
-        io.to(d.targetId).emit('resetAccount', { reason: 'missile', from: hostName });
+        io.to(d.targetId).emit('missileHit', { from: hostName });
         io.to(lobby.id).emit('killFeed', {
           killerId: socket.id,
           killer: hostName + ' 🚀',
@@ -1005,9 +1039,10 @@ function makePlayer(id, name, data) {
 // Spawn point spread along the start road; small random offset so late
 // joiners don't all stack on the same spot.
 function spawnState(lobby) {
+  const W = lobby._world || worldFor(lobby);
   const idx = lobby.players.size;
-  const sx = WORLD.line(1) + (idx % 8) * 6 + (Math.random() - 0.5) * 3;
-  const sz = WORLD.line(1) + 4 + Math.floor(idx / 8) * 6;
+  const sx = W.line(1) + (idx % 8) * 6 + (Math.random() - 0.5) * 3;
+  const sz = W.line(1) + 4 + Math.floor(idx / 8) * 6;
   return { x: sx, y: 0, z: sz, heading: 0, speed: 0, braking: false, nitro: false, damage: 0 };
 }
 
@@ -1037,7 +1072,7 @@ function createPersistentLobby() {
     isPublic: true,
     persistent: true,
     maxPlayers: 32,
-    worldSize: 'medium',
+    worldSize: 'huge',           // public server is much bigger than private lobbies
     trafficDensity: 'high',
     timeOfDay: 'day',
     weather: 'clear',
