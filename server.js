@@ -192,21 +192,41 @@ function buildRaceCheckpoints(lobby) {
   ];
 }
 
-// Rocket pad position — placed deterministically from the map seed so every
-// client builds the rocket in the same spot. Always corner-ish so it's a
-// memorable destination.
-function pickRocketPos(W, seed) {
-  const r = (((seed >>> 0) * 9301 + 49297) % 233280) / 233280;
-  const side = Math.floor(r * 4);
+// Rocket pad positions — placed deterministically from the map seed so every
+// client builds rockets in the same spots. Bigger maps get more rockets so
+// you don't have to drive forever to find one.
+function pickRocketPositions(W, seed) {
+  // tiny seeded RNG (mulberry32-ish, fine for picking jitter)
+  let a = (seed >>> 0) || 1;
+  const rng = () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
   const d = W.half - 30;
-  const corners = [{x:-d,z:-d},{x:d,z:-d},{x:-d,z:d},{x:d,z:d}];
-  return corners[side];
+  // 4 corners + 4 mid-edges
+  const cands = [
+    { x:-d, z:-d }, { x: d, z:-d }, { x:-d, z: d }, { x: d, z: d },
+    { x: 0, z:-d }, { x: 0, z: d }, { x:-d, z: 0 }, { x: d, z: 0 },
+  ];
+  // bigger maps host more rockets — 1 for small, 4 for huge
+  const n = W.blocks <= 5 ? 1 : W.blocks <= 8 ? 2 : W.blocks <= 11 ? 3 : 4;
+  // shuffle deterministically + take first n
+  for (let i = cands.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [cands[i], cands[j]] = [cands[j], cands[i]];
+  }
+  return cands.slice(0, n);
 }
 
 function gameStartPayload(lobby) {
   const W = worldFor(lobby);
-  const rocket = pickRocketPos(W, lobby.mapSeed);
-  lobby._rocket = rocket;
+  const rockets = pickRocketPositions(W, lobby.mapSeed);
+  lobby._rockets = rockets;
+  if (!lobby._rocketBusy) lobby._rocketBusy = new Array(rockets.length).fill(0);
+  // ensure cooldown array length matches if rockets were rebuilt
+  while (lobby._rocketBusy.length < rockets.length) lobby._rocketBusy.push(0);
   return {
     meta: lobbyMetaPayload(lobby),
     world: { blocks: W.blocks, spacing: W.spacing, seed: lobby.mapSeed },
@@ -216,7 +236,8 @@ function gameStartPayload(lobby) {
     race: lobby.race
       ? { checkpoints: lobby.race.checkpoints, laps: lobby.race.laps, startAt: lobby.race.startAt }
       : null,
-    rocket,                     // {x, z} — where the rocket ship sits
+    rockets,                    // array of {x, z}
+    rocket: rockets[0],         // backward-compat for older clients
   };
 }
 
@@ -817,24 +838,32 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ---- ROCKET LAUNCH: drive into the rocket pad to take off. The launching
-  //      player is broadcast to everyone so all clients see them ascend.
+  // ---- ROCKET LAUNCH: drive into ANY rocket pad to take off. The launching
+  //      player + which pad they used is broadcast to everyone.
   socket.on('rocketLaunch', () => {
     const lobby = currentLobby();
     if (!lobby || !lobby.started) return;
     const p = lobby.players.get(socket.id);
-    if (!p || !p.state || !lobby._rocket) return;
+    if (!p || !p.state || !lobby._rockets || lobby._rockets.length === 0) return;
     const now = Date.now();
-    // global rocket cooldown so two people can't fight over a single launch
-    if (lobby._rocketBusyUntil && now < lobby._rocketBusyUntil) return;
-    // require them to actually be near the rocket pad (anti-cheat)
-    const dx = p.state.x - lobby._rocket.x, dz = p.state.z - lobby._rocket.z;
-    if (dx*dx + dz*dz > 100) return;             // ~10m radius
-    lobby._rocketBusyUntil = now + 14000;        // 8s launch + 6s cooldown
+    // find which pad they're standing on (closest one within range)
+    let bestIdx = -1, bestD = 100;  // ~10m radius
+    for (let i = 0; i < lobby._rockets.length; i++) {
+      const r = lobby._rockets[i];
+      const dx = p.state.x - r.x, dz = p.state.z - r.z;
+      const d = dx*dx + dz*dz;
+      if (d < bestD) { bestD = d; bestIdx = i; }
+    }
+    if (bestIdx < 0) return;
+    // per-pad cooldown so different pads can launch independently
+    if ((lobby._rocketBusy[bestIdx] || 0) > now) return;
+    lobby._rocketBusy[bestIdx] = now + 14000;    // 8s launch + 6s cooldown
+    const r = lobby._rockets[bestIdx];
     io.to(lobby.id).emit('rocketLaunch', {
       id: socket.id,
       name: p.name,
-      x: lobby._rocket.x, z: lobby._rocket.z,
+      x: r.x, z: r.z,
+      padIdx: bestIdx,
       t: now,
     });
   });
