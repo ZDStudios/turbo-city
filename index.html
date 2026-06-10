@@ -312,7 +312,7 @@
   </div>
   <div id="raceCountdown"></div>
   <div id="controlsHint">
-    WASD / Arrows — Drive &nbsp; SPACE — Handbrake<br/>
+    WASD / Arrows — Drive &nbsp; SPACE — Handbrake / Jump<br/>
     In air: A/D roll · W/S pitch (line up your landing)<br/>
     SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; F — Shoot<br/>
     🕷 Gripper: drive into a building wall to climb it (W up, S down)<br/>
@@ -924,9 +924,9 @@ function initThree() {
   sun = new THREE.DirectionalLight(0xfff2cc, 1.4);
   sun.position.set(80, 120, 40);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.near = 1; sun.shadow.camera.far = 600;
-  const s = 320;
+  sun.shadow.mapSize.set(1024, 1024);             // halved → 4× fewer shadow-map pixels
+  sun.shadow.camera.near = 1; sun.shadow.camera.far = 400;
+  const s = 120;                                  // tight frustum around player → sharper + cheaper
   sun.shadow.camera.left=-s; sun.shadow.camera.right=s;
   sun.shadow.camera.top=s; sun.shadow.camera.bottom=-s;
   sun.shadow.bias = -0.0004;
@@ -1163,19 +1163,21 @@ function addBuilding(x, z, w, d, h) {
 
 function addTree(x, z) {
   const g = new THREE.Group();
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.45,3,8),
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.45,3,6),
     new THREE.MeshStandardMaterial({ color:0x6b4423, roughness:1 }));
-  trunk.position.y = 1.5; trunk.castShadow = true;
-  const foliage = new THREE.Mesh(new THREE.SphereGeometry(2.2,8,8),
+  trunk.position.y = 1.5;
+  const foliage = new THREE.Mesh(new THREE.SphereGeometry(2.2,6,5),
     new THREE.MeshStandardMaterial({ color:0x2f7d32, roughness:1 }));
-  foliage.position.y = 4; foliage.castShadow = true;
+  foliage.position.y = 4;
   g.add(trunk); g.add(foliage); g.position.set(x,0,z);
   worldGroup.add(g);
   // trees are SOFT collision: ramming them at speed knocks them down (no
   // momentum loss) and bullets pop them. We track each tree so we can topple it.
   const box = { minX:x-0.6, maxX:x+0.6, minZ:z-0.6, maxZ:z+0.6, top:4, tree:true };
+  const treeObj = { group:g, trunk, foliage, box, x, z, fallen:false, fall:0, dir:Math.random()*Math.PI*2, dead:false };
+  box.treeRef = treeObj;     // O(1) lookup from collision side
   buildingBoxes.push(box);
-  trees.push({ group:g, trunk, foliage, box, x, z, fallen:false, fall:0, dir:Math.random()*Math.PI*2, dead:false });
+  trees.push(treeObj);
 }
 // Knock a tree over: rotate the group, disable its collision, leave a leaf burst.
 function destroyTree(t, dirRad) {
@@ -1983,8 +1985,12 @@ function applyDayNight(dt) {
   // sun angle
   const ang = dayPhase * Math.PI*2;
   const sunY = Math.sin(ang);
-  sun.position.set(Math.cos(ang)*200, sunY*220, 80);
-  sun.target.position.set(0,0,0);
+  // Sun + shadow camera FOLLOW the player so distant areas of the huge map
+  // also get shadows (previously the shadow frustum was pinned to spawn).
+  const px = player ? player.pos.x : 0, pz = player ? player.pos.z : 0;
+  sun.position.set(px + Math.cos(ang)*200, sunY*220, pz + 80);
+  sun.target.position.set(px, 0, pz);
+  sun.target.updateMatrixWorld();
   const night = sunY < 0.05;
   const dusk = sunY >= 0.05 && sunY < 0.28;
   // light intensities
@@ -2116,6 +2122,7 @@ function updatePhysics(dt) {
 
   // controls are locked while flipped, paused, in garage, trapped, or pre-race
   if (player.invuln > 0) player.invuln -= dt;
+  if (_jumpCooldown > 0) _jumpCooldown -= dt;
   const locked = player.flipped || paused || garageOpen || player.trapped || racePreStart();
   if (player.trapped) { player.vel.set(0,0); player.speed = 0; player._vy = 0; }
   const thr = locked ? 0 : input.throttle;
@@ -2254,7 +2261,7 @@ function updatePhysics(dt) {
       if (climbing && climbing.box === box) continue;
       // TREES: hit at any speed → knock down + KEEP MOMENTUM. No bounce, no damage.
       if (box.tree === true) {
-        const t = trees.find((tr) => tr.box === box);
+        const t = box.treeRef;
         if (t && !t.fallen) {
           destroyTree(t, Math.atan2(Math.sin(player.heading), Math.cos(player.heading)));
           addCoins(3);
@@ -2581,6 +2588,22 @@ function resolveLanding(dt) {
   player.pitchVel *= (1 - Math.min(1, dt*8));
   player.flipped = tipped;                 // only locks controls while upside down
   if (tipped) player.vel.multiplyScalar(1 - Math.min(1, dt*4));
+}
+
+// Hop the car straight up. Only works when wheels are on the ground (or a
+// roof/ramp) — no double-jumping mid-air. Plane and rocket-launch are excluded.
+let _jumpCooldown = 0;
+function tryJump() {
+  if (!player || _jumpCooldown > 0) return;
+  if (player.airborne) return;
+  const def = CAR_TYPES[player.carKey] || {};
+  if (def.plane) return;                                   // planes don't jump
+  // small upward kick; heavier cars (tank, bus) hop less
+  const power = def.bus ? 10 : def.tank ? 9 : 14;
+  player._vy = Math.max(player._vy, power);
+  _jumpCooldown = 0.35;                                    // brief lockout
+  // little dust puff
+  for (let i=0;i<4;i++) emitSmoke(player.pos.x + (Math.random()-0.5)*2, 0.4, player.pos.z + (Math.random()-0.5)*2);
 }
 
 function respawn() {
@@ -2943,6 +2966,11 @@ function setupInput() {
     if (e.code==='KeyF' && gameStarted) { fire(); }
     if (e.code==='Enter' && gameStarted) { openChat(); }
     if (e.code==='Escape' && gameStarted) { if (garageOpen) closeGarage(); else togglePause(); }
+    // JUMP — Space tap (also handbrakes; that's intentional). Only on
+    // the actual keydown (e.repeat guard) so holding doesn't spam jumps.
+    if (e.code==='Space' && gameStarted && !e.repeat && !myLaunch) {
+      tryJump();
+    }
     refreshInput();
   });
   window.addEventListener('keyup', (e) => {
@@ -2995,6 +3023,12 @@ function connect() {
   });
   socket.on('disconnect', () => { connected=false; setConnStatus(false); });
   socket.on('connect_error', () => { connected=false; setConnStatus(false); });
+  // Server rejected us (not running from the official GitHub Pages copy)
+  socket.on('connectionRejected', (d) => {
+    connected = false;
+    setConnStatus(false);
+    menuMsg('Multiplayer is restricted to the official build at https://zdstudios.github.io — use Single-Player Sandbox instead.');
+  });
 
   socket.on('lobbyUpdate', (meta) => { lobbyMeta = meta; renderLobby(); });
   socket.on('playerJoined', (d) => addLobbyChat('System', `${d.name} joined`));
