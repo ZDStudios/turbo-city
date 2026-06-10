@@ -115,7 +115,7 @@ const socketToLobby = new Map();// socketId -> lobbyId
 // Super-admin: the secret code is validated SERVER-SIDE only, so it never
 // ships to the browser and can't be found by inspecting the page source.
 // Override on Render with an ADMIN_CODE env var if you want to change it.
-const ADMIN_CODE = process.env.ADMIN_CODE || '6741';
+const ADMIN_CODE = process.env.ADMIN_CODE || '8089';
 const superAdmins = new Set(); // socket ids that entered the correct code
 
 function genJoinCode() {
