@@ -26,26 +26,34 @@ const { v4: uuidv4 } = require('uuid');
 // ---------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 
-// Allowed origins. Add your GitHub Pages URL here (or set ALLOWED_ORIGINS
-// env var as a comma-separated list). "*" is accepted as a wildcard for
-// quick testing but you should lock this down for production.
+// Allowed origins. ONLY the official GitHub Pages copy + local dev should
+// be able to talk to this server — random websites/clones get rejected.
+// Override with ALLOWED_ORIGINS env var (comma-separated) if needed.
 const DEFAULT_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:5500',
   'http://127.0.0.1:5500',
   'http://localhost:8080',
-  'https://your-username.github.io', // <-- change to your GitHub Pages domain
+  'https://zdstudios.github.io',     // official GitHub Pages host (any repo under this user)
 ];
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim())
   : DEFAULT_ORIGINS;
 
-// During development it's convenient to allow everything. Set
-// STRICT_CORS=true on Render to enforce the allow-list.
-const STRICT_CORS = process.env.STRICT_CORS === 'true';
+// Strict origin enforcement is ON by default in production. Set
+// STRICT_CORS=false to disable (e.g. when testing a fresh deploy).
+const STRICT_CORS = process.env.STRICT_CORS !== 'false';
+
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  return ALLOWED_ORIGINS.includes(origin);
+}
 
 const corsOptions = {
-  origin: STRICT_CORS ? ALLOWED_ORIGINS : true,
+  // function form lets us return false (block) instead of mirroring origin back
+  origin: STRICT_CORS
+    ? (origin, cb) => cb(null, !origin || isAllowedOrigin(origin))
+    : true,
   methods: ['GET', 'POST'],
   credentials: true,
 };
@@ -534,7 +542,16 @@ app.get('/', (req, res) => {
 // Socket.IO handlers
 // ---------------------------------------------------------------------
 io.on('connection', (socket) => {
-  console.log('[conn] ', socket.id);
+  // Hard origin check — sockets bypass CORS, so verify here too. Only the
+  // official GitHub Pages copy + local dev are allowed.
+  const origin = socket.handshake.headers.origin;
+  if (STRICT_CORS && !isAllowedOrigin(origin)) {
+    console.log('[conn REJECTED bad origin]', socket.id, origin || '(none)');
+    try { socket.emit('connectionRejected', { reason: 'unauthorized_origin' }); } catch {}
+    socket.disconnect(true);
+    return;
+  }
+  console.log('[conn] ', socket.id, origin || '');
 
   function currentLobby() {
     const id = socketToLobby.get(socket.id);
