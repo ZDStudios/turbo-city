@@ -314,7 +314,7 @@
   <div id="controlsHint">
     WASD / Arrows — Drive &nbsp; SPACE — Handbrake / Jump<br/>
     In air: A/D roll · W/S pitch (line up your landing)<br/>
-    SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; F — Shoot<br/>
+    SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; F — Shoot &nbsp; P — Photo Mode<br/>
     🕷 Gripper: drive into a building wall to climb it (W up, S down)<br/>
     🛡 Tank: F fires the cannon (no turret unlock needed)<br/>
     Right-drag — Look &nbsp; Wheel — Zoom &nbsp; ENTER — Chat &nbsp; ESC — Pause
@@ -431,8 +431,12 @@ const CAR_TYPES = {
              grip:true, desc:'Climbs building walls!' },
   bus:     { name:'🚌 Bus',        topSpeed:50, accel:18, handling:1.4, brake:30, mass:4.0, color:0xffcc33,
              bus:true, desc:'Massive · Heavy · Plows traffic' },
+  f1:      { name:'🏎 F1 Racer',   topSpeed:98, accel:52, handling:3.4, brake:56, mass:0.8, color:0xdd0000,
+             f1:true, desc:'Fastest car alive · Insane grip' },
+  monster: { name:'🚙 Monster Truck', topSpeed:55, accel:30, handling:1.8, brake:34, mass:3.0, color:0x7722cc,
+             monster:true, desc:'Crushes traffic · Mega jump' },
 };
-const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane','tank','gripper','bus'];
+const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane','tank','gripper','bus','f1','monster'];
 const COLOR_OPTIONS = [0xff3344,0xff8c1a,0xf1c40f,0x2ecc71,0x1abc9c,0x3498db,0x9b59b6,0xe84393,0xecf0f1,0x2c3e50];
 
 /* =====================================================================
@@ -493,6 +497,8 @@ function buildCarMesh(type, colorHex) {
   if (type === 'tank') return buildTankMesh(colorHex);
   if (type === 'gripper') return buildGripperMesh(colorHex);
   if (type === 'bus') return buildBusMesh(colorHex);
+  if (type === 'f1') return buildF1Mesh(colorHex);
+  if (type === 'monster') return buildMonsterMesh(colorHex);
   const def = CAR_TYPES[type] || CAR_TYPES.sports;
   const group = new THREE.Group();
 
@@ -816,6 +822,108 @@ function buildBusMesh(colorHex) {
   return g;
 }
 
+/* Open-wheel F1 racer — low slab, big wings, exposed wheels */
+function buildF1Mesh(colorHex) {
+  const g = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color: colorHex, metalness:0.7, roughness:0.25 });
+  g.userData.damageMat = paint;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.5, 4.6), paint);
+  body.position.y = 0.5; body.castShadow = true; g.add(body);
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.3, 1.4), paint);
+  nose.position.set(0, 0.42, -2.9); g.add(nose);
+  const wingMat = new THREE.MeshStandardMaterial({ color:0x161616, metalness:0.5, roughness:0.4 });
+  const fw = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.1, 0.8), wingMat);
+  fw.position.set(0, 0.28, -3.4); g.add(fw);
+  const rw = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.12, 0.7), wingMat);
+  rw.position.set(0, 1.25, 2.2); g.add(rw);
+  for (const sx of [-0.7, 0.7]) {
+    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.7, 0.4), wingMat);
+    strut.position.set(sx, 0.9, 2.2); g.add(strut);
+  }
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 8),
+    new THREE.MeshStandardMaterial({ color:0xffffff, metalness:0.3, roughness:0.2 }));
+  helmet.position.set(0, 0.95, 0.2); g.add(helmet);
+  const intake = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 1.2), paint);
+  intake.position.set(0, 1.05, 1.0); g.add(intake);
+  const wheelMat = new THREE.MeshStandardMaterial({ color:0x111111, roughness:0.9 });
+  const rimMat = new THREE.MeshStandardMaterial({ color:0xddcc33, metalness:0.9, roughness:0.2 });
+  const wheels = [];
+  for (const [x, z] of [[0.95,-1.6],[-0.95,-1.6],[0.95,1.7],[-0.95,1.7]]) {
+    const w = new THREE.Group();
+    const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.5,0.5,14), wheelMat);
+    tire.rotation.z = Math.PI/2; tire.castShadow = true; w.add(tire);
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.28,0.52,8), rimMat);
+    rim.rotation.z = Math.PI/2; w.add(rim);
+    w.position.set(x, 0.5, z); w.userData.isFront = z < 0;
+    g.add(w); wheels.push(w);
+  }
+  g.userData.wheels = wheels;
+  const tailMat = new THREE.MeshStandardMaterial({ color:0xff2200, emissive:0xff2200, emissiveIntensity:1 });
+  const brakeLights = [];
+  const tl = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.3,0.08), tailMat);
+  tl.position.set(0, 1.0, 2.55); g.add(tl); brakeLights.push(tl);
+  g.userData.brakeLights = brakeLights;
+  g.userData.headlightMeshes = [];
+  const spot = new THREE.SpotLight(0xfff4d6, 0, 60, Math.PI/6, 0.4, 1.5);
+  spot.position.set(0, 0.5, -3.4);
+  const tgt = new THREE.Object3D(); tgt.position.set(0,0,-20); g.add(tgt); spot.target = tgt;
+  g.add(spot); g.userData.headlight = spot;
+  return g;
+}
+
+/* Monster truck — pickup body way up on gigantic wheels */
+function buildMonsterMesh(colorHex) {
+  const g = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color: colorHex, metalness:0.5, roughness:0.4 });
+  g.userData.damageMat = paint;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.0, 4.6), paint);
+  body.position.y = 2.5; body.castShadow = true; g.add(body);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.8, 1.8),
+    new THREE.MeshStandardMaterial({ color:0x111418, roughness:0.3 }));
+  cabin.position.set(0, 3.3, -0.6); g.add(cabin);
+  const exMat = new THREE.MeshStandardMaterial({ color:0xcccccc, metalness:0.9, roughness:0.3 });
+  for (const sx of [-0.9, 0.9]) {
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,1.2,8), exMat);
+    pipe.position.set(sx, 3.4, 0.6); g.add(pipe);
+  }
+  const armMat = new THREE.MeshStandardMaterial({ color:0x333333 });
+  const wheelMat = new THREE.MeshStandardMaterial({ color:0x0a0a0a, roughness:0.95 });
+  const rimMat = new THREE.MeshStandardMaterial({ color:0xff4444, metalness:0.8, roughness:0.3 });
+  const wheels = [];
+  for (const [x, z] of [[1.7,-1.7],[-1.7,-1.7],[1.7,1.7],[-1.7,1.7]]) {
+    const w = new THREE.Group();
+    const tire = new THREE.Mesh(new THREE.CylinderGeometry(1.25,1.25,0.9,16), wheelMat);
+    tire.rotation.z = Math.PI/2; tire.castShadow = true; w.add(tire);
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.6,0.6,0.95,8), rimMat);
+    rim.rotation.z = Math.PI/2; w.add(rim);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.2, 0.25), armMat);
+    arm.position.set(x>0?-0.7:0.7, 0.9, 0); w.add(arm);
+    w.position.set(x, 1.25, z); w.userData.isFront = z < 0;
+    g.add(w); wheels.push(w);
+  }
+  g.userData.wheels = wheels;
+  const tailMat = new THREE.MeshStandardMaterial({ color:0x550000, emissive:0x330000, emissiveIntensity:1 });
+  const brakeLights = [];
+  for (const sx of [-0.8, 0.8]) {
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.25,0.1), tailMat.clone());
+    tl.position.set(sx, 2.6, 2.35); g.add(tl); brakeLights.push(tl);
+  }
+  g.userData.brakeLights = brakeLights;
+  const headMat = new THREE.MeshStandardMaterial({ color:0xffffee, emissive:0xffffcc, emissiveIntensity:0.3 });
+  const headlightMeshes = [];
+  for (const sx of [-0.8, 0.8]) {
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.22,0.1), headMat.clone());
+    hl.position.set(sx, 2.5, -2.35); g.add(hl); headlightMeshes.push(hl);
+  }
+  g.userData.headlightMeshes = headlightMeshes;
+  const spot = new THREE.SpotLight(0xfff4d6, 0, 60, Math.PI/6, 0.4, 1.5);
+  spot.position.set(0, 2.5, -2.4);
+  const tgt = new THREE.Object3D(); tgt.position.set(0,0,-20); g.add(tgt); spot.target = tgt;
+  g.add(spot); g.userData.headlight = spot;
+  g.userData.isMonster = true;
+  return g;
+}
+
 /* =====================================================================
    GLOBAL STATE
    ===================================================================== */
@@ -890,6 +998,18 @@ let myLaunch = null;                     // shortcut to my own launch, if any
 // destructible trees: each tree gets a record so bullets/rams can topple it
 const trees = [];                        // [{ group, foliage, trunk, box, x, z, fallen:false, fall:0 }]
 
+// --- fun stuff: UFO, portals, speed traps, beach ball, nitro trails, photo mode ---
+let trailPool = [], trailPoolIdx = 0;    // glowing nitro light-trail ribbons
+let ufo = null, ufoAngle = Math.random()*6, ufoRespawnT = 0;
+let cloudGroup = null, starField = null; // sky decoration
+let photoMode = false;
+const _crushCd = new Map();              // monster-truck crush rate limiter
+let beachBall = null;
+const ballVel = new THREE.Vector3();
+const portals = [];                      // teleport rings [{x,z,mesh,ring}]
+let portalCooldown = 0;
+const speedTraps = [];                   // speed cameras [{x,z,flash,cooldown,glow}]
+
 // audio
 let audioCtx = null, engineOsc = null, engineGain = null;
 
@@ -906,6 +1026,9 @@ function initThree() {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  // film-style tone mapping — richer colors, no blown-out whites
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.12;
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87b8e8);
@@ -934,8 +1057,11 @@ function initThree() {
   scene.add(sun.target);
 
   buildSky();
+  buildClouds();
+  buildStars();
   buildWorld();
   buildParticlePools();
+  buildUfo();
 
   window.addEventListener('resize', onResize);
   animate();
@@ -1094,6 +1220,9 @@ function buildWorld(seed) {
   buildCoinPickups(R);
   buildRamps(R);
   buildBillboards(R);
+  buildPortals(R);
+  buildSpeedTraps(R);
+  buildBeachBall();
   buildSkidLayer();
 }
 
@@ -1529,6 +1658,219 @@ function animateBouncePads(dt) {
 }
 
 /* =====================================================================
+   SKY DECORATION — drifting clouds + stars that fade in at night
+   ===================================================================== */
+function buildClouds() {
+  cloudGroup = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color:0xffffff, transparent:true, opacity:0.85 });
+  for (let i=0;i<14;i++){
+    const c = new THREE.Group();
+    const n = 3 + Math.floor(Math.random()*3);
+    for (let k=0;k<n;k++){
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(8+Math.random()*8, 7, 5), mat);
+      puff.position.set((Math.random()-0.5)*24, (Math.random()-0.5)*4, (Math.random()-0.5)*14);
+      puff.scale.y = 0.45;
+      c.add(puff);
+    }
+    c.position.set((Math.random()-0.5)*1100, 110+Math.random()*60, (Math.random()-0.5)*1100);
+    cloudGroup.add(c);
+  }
+  scene.add(cloudGroup);
+}
+function buildStars() {
+  const n = 700, pos = new Float32Array(n*3);
+  for (let i=0;i<n;i++){
+    const a = Math.random()*Math.PI*2, e = Math.random()*Math.PI*0.45 + 0.08, r = 560;
+    pos[i*3]   = Math.cos(a)*Math.cos(e)*r;
+    pos[i*3+1] = Math.sin(e)*r;
+    pos[i*3+2] = Math.sin(a)*Math.cos(e)*r;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  starField = new THREE.Points(geo, new THREE.PointsMaterial({
+    color:0xffffff, size:1.6, transparent:true, opacity:0, sizeAttenuation:false, depthWrite:false }));
+  scene.add(starField);
+}
+
+/* =====================================================================
+   UFO — circles high above the map. Shoot it down for a 200-coin jackpot!
+   ===================================================================== */
+function buildUfo() {
+  if (ufo) scene.remove(ufo);
+  const g = new THREE.Group();
+  const disc = new THREE.Mesh(new THREE.SphereGeometry(4, 16, 8),
+    new THREE.MeshStandardMaterial({ color:0x99aabb, metalness:0.9, roughness:0.25 }));
+  disc.scale.set(1, 0.28, 1); g.add(disc);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(1.6, 12, 8),
+    new THREE.MeshStandardMaterial({ color:0x66ffcc, emissive:0x22aa88, emissiveIntensity:0.8, transparent:true, opacity:0.85 }));
+  dome.position.y = 1.0; g.add(dome);
+  for (let i=0;i<8;i++){
+    const ang = i/8*Math.PI*2;
+    const l = new THREE.Mesh(new THREE.SphereGeometry(0.3,6,5), new THREE.MeshBasicMaterial({ color:0xffee55 }));
+    l.position.set(Math.cos(ang)*3.2, -0.2, Math.sin(ang)*3.2); g.add(l);
+  }
+  scene.add(g); ufo = g;
+}
+function updateUfo(dt) {
+  if (!ufo) return;
+  if (ufoRespawnT > 0) {
+    ufoRespawnT -= dt;
+    if (ufoRespawnT > 0) return;
+    ufo.visible = true;
+  }
+  ufoAngle += dt * 0.07;
+  const r = WORLD.half * 0.55;
+  ufo.position.set(Math.cos(ufoAngle)*r, 48 + Math.sin(clock.elapsedTime*0.5)*5, Math.sin(ufoAngle)*r);
+  ufo.rotation.y += dt * 1.5;
+}
+function ufoJackpot() {
+  if (!ufo || !ufo.visible) return;
+  addCoins(200); saveAccount(); updateCoinsUI();
+  showStuntMsg('🛸 UFO DOWN! +200 🪙');
+  ufoRespawnT = 30;          // flies back in half a minute later
+  ufo.visible = false;
+}
+
+/* =====================================================================
+   TELEPORT PORTALS — drive into one, pop out across the map
+   ===================================================================== */
+function buildPortals(R) {
+  R = R || mapRng;
+  portals.length = 0;
+  const spots = [
+    { x: line(1) + 30, z: line(1) - 20 },
+    { x: line(WORLD.blocks-1) - 30, z: line(WORLD.blocks-1) + 20 },
+  ];
+  for (const p of spots) {
+    const g = new THREE.Group();
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(4, 0.5, 10, 28),
+      new THREE.MeshStandardMaterial({ color:0xaa44ff, emissive:0x7722dd, emissiveIntensity:1.4 }));
+    ring.position.y = 4.2; g.add(ring);
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(3.4, 24),
+      new THREE.MeshBasicMaterial({ color:0xcc88ff, transparent:true, opacity:0.35, side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false }));
+    disc.position.y = 4.2; g.add(disc);
+    g.position.set(p.x, 0, p.z);
+    worldGroup.add(g);
+    portals.push({ x: p.x, z: p.z, mesh: g, ring });
+  }
+}
+function updatePortals(dt) {
+  portalCooldown = Math.max(0, portalCooldown - dt);
+  for (const p of portals) p.ring.rotation.z += dt * 1.2;
+  if (portalCooldown > 0 || portals.length < 2 || myLaunch) return;
+  for (let i = 0; i < 2; i++) {
+    const p = portals[i], q = portals[1 - i];
+    const dx = player.pos.x - p.x, dz = player.pos.z - p.z;
+    if (dx*dx + dz*dz < 20 && player.pos.y < 8) {
+      for (let k=0;k<8;k++){ emitSmoke(p.x,2,p.z); emitSmoke(q.x,2,q.z); }
+      player.pos.x = q.x + Math.sin(player.heading) * 8;
+      player.pos.z = q.z + Math.cos(player.heading) * 8;
+      player.invuln = Math.max(player.invuln, 1);
+      portalCooldown = 2.5;
+      showStuntMsg('🌀 TELEPORTED!');
+      bounceSound();
+      break;
+    }
+  }
+}
+
+/* =====================================================================
+   SPEED CAMERAS — blast past one fast enough and it pays YOU
+   ===================================================================== */
+function buildSpeedTraps(R) {
+  R = R || mapRng;
+  speedTraps.length = 0;
+  const n = 3 + Math.floor(R()*2);
+  for (let k=0;k<n;k++){
+    const i = 1 + Math.floor(R()*(WORLD.blocks-1));
+    const j = 1 + Math.floor(R()*(WORLD.blocks-1));
+    const x = line(i) + 7, z = line(j) + (R()-0.5)*40;
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.22,5,8),
+      new THREE.MeshStandardMaterial({ color:0x888888 }));
+    pole.position.y = 2.5; g.add(pole);
+    const camBox = new THREE.Mesh(new THREE.BoxGeometry(1.0,0.6,0.7),
+      new THREE.MeshStandardMaterial({ color:0x222233 }));
+    camBox.position.set(0,5,0); camBox.rotation.y = Math.PI/2; g.add(camBox);
+    const flash = new THREE.Mesh(new THREE.SphereGeometry(0.22,8,6),
+      new THREE.MeshBasicMaterial({ color:0xffffff }));
+    flash.position.set(0,5,0.45); g.add(flash);
+    g.position.set(x,0,z);
+    worldGroup.add(g);
+    speedTraps.push({ x, z, flash, cooldown: 0, glow: 0 });
+  }
+}
+function updateSpeedTraps(dt) {
+  for (const t of speedTraps) {
+    t.cooldown = Math.max(0, t.cooldown - dt);
+    t.glow = Math.max(0, t.glow - dt*2);
+    t.flash.scale.setScalar(1 + t.glow*5);
+    if (t.cooldown > 0) continue;
+    const dx = player.pos.x - t.x, dz = player.pos.z - t.z;
+    if (dx*dx + dz*dz < 144 && Math.abs(player.speed) > 42) {
+      t.cooldown = 10; t.glow = 1;
+      addCoins(40); showStuntMsg('📸 SPEED CAMERA! +40 🪙');
+      coinPickupSound();
+    }
+  }
+}
+
+/* =====================================================================
+   GIANT BEACH BALL — kick it around with your car (near spawn)
+   ===================================================================== */
+function buildBeachBall() {
+  const g = new THREE.Group();
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(2.2, 16, 12),
+    new THREE.MeshStandardMaterial({ color:0xff4466, roughness:0.4 }));
+  g.add(ball);
+  const stripe = new THREE.Mesh(new THREE.TorusGeometry(2.21, 0.3, 8, 24),
+    new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.4 }));
+  g.add(stripe);
+  const stripe2 = stripe.clone(); stripe2.rotation.x = Math.PI/2; g.add(stripe2);
+  g.position.set(line(1) + 26, 2.2, line(1) + 26);
+  worldGroup.add(g);
+  beachBall = g; ballVel.set(0,0,0);
+}
+function updateBeachBall(dt) {
+  if (!beachBall) return;
+  const b = beachBall;
+  // kick: car contact transfers velocity to the ball
+  const dx = b.position.x - player.pos.x, dz = b.position.z - player.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 4.6 && d > 0.01 && Math.abs(player.pos.y - b.position.y) < 4) {
+    const k = Math.max(8, Math.abs(player.speed) * 1.2);
+    ballVel.x = (dx/d) * k; ballVel.z = (dz/d) * k;
+    ballVel.y = Math.max(ballVel.y, Math.min(18, k * 0.45));
+  }
+  b.position.x += ballVel.x * dt;
+  b.position.z += ballVel.z * dt;
+  b.position.y += ballVel.y * dt;
+  ballVel.y -= 22 * dt;
+  if (b.position.y < 2.2) {
+    b.position.y = 2.2;
+    ballVel.y = Math.abs(ballVel.y) * 0.65;
+    if (ballVel.y < 1.5) ballVel.y = 0;
+  }
+  ballVel.x *= (1 - Math.min(1, dt*0.5));
+  ballVel.z *= (1 - Math.min(1, dt*0.5));
+  const lim = WORLD.half + 20;
+  if (Math.abs(b.position.x) > lim) { b.position.x = Math.sign(b.position.x)*lim; ballVel.x *= -0.8; }
+  if (Math.abs(b.position.z) > lim) { b.position.z = Math.sign(b.position.z)*lim; ballVel.z *= -0.8; }
+  // roll visuals
+  b.rotation.x += ballVel.z * dt * 0.4;
+  b.rotation.z -= ballVel.x * dt * 0.4;
+}
+
+/* =====================================================================
+   PHOTO MODE — P hides the whole HUD for clean screenshots
+   ===================================================================== */
+function togglePhotoMode() {
+  photoMode = !photoMode;
+  $('hud').style.visibility = photoMode ? 'hidden' : 'visible';
+  $('speedLines').style.display = photoMode ? 'none' : 'block';
+}
+
+/* =====================================================================
    ROCKET SHIP — server tells us where it lives via gameStart.rocket.
    Drive into it to launch (handled in updatePhysics).
    ===================================================================== */
@@ -1815,6 +2157,29 @@ function buildParticlePools() {
     b.userData = { vx:0, vy:0, vz:0, life:0, range:140, dist:0, hitFn:null };
     scene.add(b); bulletPool.push(b);
   }
+  // nitro light-trail ribbons (cyan glow left on the road while boosting)
+  const trailMat = new THREE.MeshBasicMaterial({ color:0x00ddff, transparent:true, opacity:0.7,
+    blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide });
+  for (let i=0;i<36;i++){
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 2.4), trailMat.clone());
+    m.rotation.x = -Math.PI/2; m.visible = false; m.userData = { life:0 };
+    scene.add(m); trailPool.push(m);
+  }
+}
+function emitTrail(x, z, heading) {
+  const m = trailPool[trailPoolIdx]; trailPoolIdx = (trailPoolIdx+1)%trailPool.length;
+  m.visible = true; m.material.opacity = 0.7;
+  m.position.set(x, 0.15, z);
+  m.rotation.z = -heading;
+  m.userData.life = 0.5;
+}
+function updateTrails(dt) {
+  for (const m of trailPool) {
+    if (!m.visible) continue;
+    m.userData.life -= dt;
+    m.material.opacity = Math.max(0, m.userData.life * 1.4);
+    if (m.userData.life <= 0) m.visible = false;
+  }
 }
 // fires a single visible bullet from (x,y,z) in `heading`. onHit gets called
 // when the bullet has traveled to the target distance (or its max range).
@@ -1998,6 +2363,14 @@ function applyDayNight(dt) {
   sun.intensity = 0.2 + dayAmt*1.3;
   ambient.intensity = 0.15 + dayAmt*0.45;
   hemi.intensity = 0.2 + dayAmt*0.5;
+  // stars fade in as it gets dark; clouds drift slowly across the sky
+  if (starField) starField.material.opacity = Math.max(0, 0.9 - dayAmt * 1.6);
+  if (cloudGroup) {
+    for (const c of cloudGroup.children) {
+      c.position.x += dt * 2.0;
+      if (c.position.x > 700) c.position.x = -700;
+    }
+  }
   // colors
   const skyDay = new THREE.Color(0x87b8e8), skyNight = new THREE.Color(0x0a0e1f), skyDusk = new THREE.Color(0xff7b4a);
   let skyCol;
@@ -2239,6 +2612,28 @@ function updatePhysics(dt) {
   }
   player.suspension *= (1 - dt*4);
 
+  // ---- STUNT SCORING: air time + flips pay out on landing ----
+  if (airborne && !myLaunch) {
+    player._airT = (player._airT || 0) + dt;
+    player._spinAcc = (player._spinAcc || 0) + (Math.abs(player.rollVel) + Math.abs(player.pitchVel)) * dt;
+  } else if (player._airT) {
+    if (player._airT > 1.0) {
+      let c = Math.round(player._airT * 12), msg = '✈ AIR TIME +' + c + ' 🪙';
+      if (player._spinAcc > 4.5) { c += 50; msg = '🔥 FLIP BONUS +' + c + ' 🪙'; }
+      addCoins(c); showStuntMsg(msg);
+    }
+    player._airT = 0; player._spinAcc = 0;
+  }
+  // ---- DRIFT SCORING: hold a slide for 1.2s+ to cash it in ----
+  if (isDrifting) player._driftT = (player._driftT || 0) + dt;
+  else if (player._driftT) {
+    if (player._driftT > 1.2) {
+      const c = Math.round(player._driftT * 10);
+      addCoins(c); showStuntMsg('💨 DRIFT +' + c + ' 🪙');
+    }
+    player._driftT = 0;
+  }
+
   // fell off the world -> respawn (only true safety net left)
   if (player.pos.y < -15) respawn();
 
@@ -2359,6 +2754,11 @@ function updatePhysics(dt) {
       const ex = exhaustWorldPos();
       emitExhaust(ex.x, 0.4, ex.z);
     }
+  }
+  // glowing cyan light-trail while boosting
+  if (nitroActive && Math.abs(player.speed) > 8) {
+    const ex = exhaustWorldPos();
+    emitTrail(ex.x, ex.z, player.heading);
   }
 
   // mesh transform handled in render
@@ -2530,11 +2930,24 @@ function runOverPeds() {
 
 const COLLIDE_R = 4.2;   // car collision radius (cars are ~4-5 long)
 function collideWithActors() {
+  const meMonster = !!(CAR_TYPES[player.carType] || {}).monster;
   const check = (id, ox, oz, isPlayer) => {
     const dx = player.pos.x - ox, dz = player.pos.z - oz;
     const d = Math.hypot(dx, dz);
     if (d >= COLLIDE_R || d <= 0.001) return;
     const nx = dx/d, nz = dz/d;                 // from other car -> me
+    // MONSTER TRUCK crushes NPC traffic — they go flying, you don't slow down
+    if (meMonster && !isPlayer) {
+      const now = performance.now();
+      if ((_crushCd.get(id) || 0) < now - 600) {
+        _crushCd.set(id, now);
+        const imp = Math.max(14, Math.abs(player.speed));
+        if (offlineMode) offlineSim.knock(id, -nx*imp*2.2, -nz*imp*2.2, Math.min(20, imp*0.4));
+        else if (connected) socket.emit('hitNpc', { id, dmg: 25, dx: -nx, dz: -nz });
+        emitSmoke(ox, 1, oz);
+      }
+      return; // no separation push, no speed loss — just roll over them
+    }
     player.pos.x += nx*(COLLIDE_R-d);           // separate so we don't overlap/phase
     player.pos.z += nz*(COLLIDE_R-d);
     if (player.invuln > 0) return;
@@ -2596,10 +3009,10 @@ let _jumpCooldown = 0;
 function tryJump() {
   if (!player || _jumpCooldown > 0) return;
   if (player.airborne) return;
-  const def = CAR_TYPES[player.carKey] || {};
-  if (def.plane) return;                                   // planes don't jump
-  // small upward kick; heavier cars (tank, bus) hop less
-  const power = def.bus ? 10 : def.tank ? 9 : 14;
+  const def = CAR_TYPES[player.carType] || {};
+  if (def.fly) return;                                     // planes don't jump
+  // small upward kick; heavier cars (tank, bus) hop less, monster trucks LEAP
+  const power = def.monster ? 19 : def.bus ? 10 : def.tank ? 9 : 14;
   player._vy = Math.max(player._vy, power);
   _jumpCooldown = 0.35;                                    // brief lockout
   // little dust puff
@@ -2718,6 +3131,11 @@ function animate() {
     updateCoinPickups(dt);
     updateRocketLaunches(dt);
     updateTrees(dt);
+    updateTrails(dt);
+    updateUfo(dt);
+    updatePortals(dt);
+    updateSpeedTraps(dt);
+    updateBeachBall(dt);
 
     // send input ~60Hz
     if (performance.now() - lastInputSent > 1000/CONFIG.INPUT_HZ) {
@@ -2953,6 +3371,22 @@ function showBoostMsg() {
   clearTimeout(el._t); el._t = setTimeout(()=> el.style.opacity='0', 900);
 }
 
+/* gold popup used by stunts, drifts, speed cams, UFO jackpot, portals */
+let stuntEl = null;
+function showStuntMsg(text) {
+  if (!stuntEl) {
+    stuntEl = document.createElement('div');
+    stuntEl.style.cssText = 'position:absolute;top:130px;left:50%;transform:translateX(-50%);'
+      + 'font-size:24px;font-weight:800;color:#ffd23f;text-shadow:0 2px 10px #000;'
+      + 'transition:opacity .4s;pointer-events:none;opacity:0;';
+    $('hud').appendChild(stuntEl);
+  }
+  stuntEl.textContent = text;
+  stuntEl.style.opacity = '1';
+  clearTimeout(stuntEl._t);
+  stuntEl._t = setTimeout(()=> stuntEl.style.opacity = '0', 1500);
+}
+
 /* =====================================================================
    INPUT HANDLING
    ===================================================================== */
@@ -2964,6 +3398,7 @@ function setupInput() {
     if (e.code==='KeyH' && gameStarted) { input.horn=true; playHorn(); }
     if (e.code==='KeyR' && gameStarted) { respawn(); }
     if (e.code==='KeyF' && gameStarted) { fire(); }
+    if (e.code==='KeyP' && gameStarted) { togglePhotoMode(); }
     if (e.code==='Enter' && gameStarted) { openChat(); }
     if (e.code==='Escape' && gameStarted) { if (garageOpen) closeGarage(); else togglePause(); }
     // JUMP — Space tap (also handbrakes; that's intentional). Only on
@@ -3716,6 +4151,14 @@ function fire() {
     const t = remotePlayers.get(aimBotLockId).target;
     bd = Math.hypot(t.x-ox, t.z-oz);
   }
+  // UFO jackpot: nothing else targeted + UFO roughly ahead → homing shot at it
+  if (!bestId && ufo && ufo.visible && ufoRespawnT <= 0) {
+    const vx = ufo.position.x - ox, vz = ufo.position.z - oz;
+    const dist = Math.hypot(vx, vz);
+    if (dist < 220 && (vx*dirx + vz*dirz) / Math.max(1, dist) > 0.9) {
+      bestId = 'ufo'; bestKind = 'u'; bd = dist;
+    }
+  }
 
   // tank shells: bigger bullet, bigger boom, more damage
   const dmgPlayer = isTank ? 28 : 12;
@@ -3729,6 +4172,8 @@ function fire() {
         if (!r || !r.target) return null;
         return { x: r.target.x, y: (r.target.y||0) + 1.2, z: r.target.z };
       })
+    : bestKind === 'u'
+    ? (() => (ufo && ufo.visible) ? { x: ufo.position.x, y: ufo.position.y, z: ufo.position.z } : null)
     : null;
   spawnBullet(ox, oy, oz, aim, bd < 1e9 ? bd : 140, (hx, hy, hz) => {
     if (bestKind === 'p') {
@@ -3747,6 +4192,11 @@ function fire() {
       smallExplosion(bestId.x, 2, bestId.z);
       destroyTree(bestId);
       addCoins(5);
+    } else if (bestKind === 'u') {
+      // UFO down — jackpot!
+      bigExplosion(hx, hy, hz);
+      explosionSound();
+      ufoJackpot();
     }
   }, shellSize, homingFn);
 }
@@ -3976,6 +4426,7 @@ function showScreen(s) {
   $('lobby').classList.toggle('hidden', s!=='lobby');
   $('hud').classList.toggle('hidden', s!=='game');
   $('pause').classList.add('hidden');
+  if (s === 'game') { photoMode = false; $('hud').style.visibility = 'visible'; $('speedLines').style.display = 'block'; }
 }
 
 let paused=false;
