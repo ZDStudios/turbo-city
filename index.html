@@ -175,6 +175,20 @@
   #bountyHud { position:absolute; left:18px; top:150px; font-size:12px; font-weight:700; color:#9be7ff;
     background:#0a0e17cc; padding:6px 12px; border-radius:8px; border:1px solid #2a6cc4; display:none; max-width:280px; }
 
+  /* ---------- item inventory (Mario-Kart style) ---------- */
+  #invBar { position:absolute; bottom:24px; left:50%; transform:translateX(-50%); display:flex; gap:10px; z-index:11; }
+  .inv-slot { position:relative; width:62px; height:62px; border-radius:14px; background:#0a0e17cc;
+    border:2px solid #2a3a5a; display:flex; align-items:center; justify-content:center; font-size:34px;
+    transition:border-color .15s, box-shadow .15s, transform .15s; }
+  .inv-slot.inv-sel { border-color:#ffd23f; box-shadow:0 0 18px #ffd23f88; transform:translateY(-4px); }
+  .inv-slot.inv-empty { opacity:0.45; }
+  .inv-slot .inv-emoji { line-height:1; filter:drop-shadow(0 2px 4px #000); }
+  .inv-key { position:absolute; top:3px; left:6px; font-size:11px; font-weight:800; color:#6a7a96; }
+  #invName { position:absolute; bottom:72px; left:50%; transform:translateX(-50%); white-space:nowrap;
+    font-size:12px; font-weight:600; color:#cdd9ec; background:#0a0e17cc; padding:3px 12px; border-radius:6px;
+    border:1px solid #2a3a5a; pointer-events:none; }
+  #invName:empty { display:none; }
+
   /* ---------- health / combat ---------- */
   #healthWrap { position:absolute; top:50px; left:50%; transform:translateX(-50%); display:flex;
     align-items:center; gap:8px; font-size:11px; color:#cdd9ec; background:#0a0e17aa; padding:4px 10px;
@@ -347,6 +361,12 @@
   <div id="comboHud">COMBO x2</div>
   <div id="wantedHud">🚨 ⭐</div>
   <div id="bountyHud"></div>
+  <div id="invBar">
+    <div id="invName"></div>
+    <div class="inv-slot inv-empty inv-sel" id="invSlot0"><span class="inv-key">1</span><span class="inv-emoji"></span></div>
+    <div class="inv-slot inv-empty" id="invSlot1"><span class="inv-key">2</span><span class="inv-emoji"></span></div>
+    <div class="inv-slot inv-empty" id="invSlot2"><span class="inv-key">3</span><span class="inv-emoji"></span></div>
+  </div>
   <div id="racePanel" class="hidden">
     <div id="raceLap">LAP 1/3</div>
     <div id="racePos">P1</div>
@@ -358,6 +378,7 @@
     In air: A/D roll · W/S pitch (line up your landing)<br/>
     SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; F — Shoot &nbsp; P — Photo Mode<br/>
     U — Underglow &nbsp; M — Radio &nbsp; 🧲 grab magnets &nbsp; 💍 fly through rings<br/>
+    📦 grab item boxes &nbsp; 1/2/3 — select item &nbsp; Q — use item<br/>
     🕷 Gripper: drive into a building wall to climb it (W up, S down)<br/>
     🛡 Tank: F fires the cannon (no turret unlock needed)<br/>
     Right-drag — Look &nbsp; Wheel — Zoom &nbsp; ENTER — Chat &nbsp; ESC — Pause
@@ -1060,6 +1081,14 @@ const RADIO_STATIONS = ['🎹 Synthwave FM', '🎮 Chiptune 8-bit', '🎧 Lo-Fi 
 let slipstreamT = 0;                                      // drafting timer
 let bounty = null, bountyCd = 5;                          // rotating challenge
 
+// === INVENTORY: Mario-Kart-style 3-slot item system ===
+const inventory = [null, null, null];                    // 3 carry slots (item ids or null)
+let invSelected = 0;                                     // highlighted slot 0..2
+const itemBoxes = [];                                    // mystery boxes [{x,z,mesh,cooldown}]
+const itemProjectiles = [];                              // live shells/bombs [{mesh,x,y,z,vx,vz,kind,life,...}]
+const oilSlicks = [];                                    // dropped hazards [{x,z,mesh,life}]
+let auraMesh = null, auraKind = null;                    // star/shield/ghost glow attached to car
+
 const _crushCd = new Map();              // monster-truck crush rate limiter
 let beachBall = null;
 const ballVel = new THREE.Vector3();
@@ -1179,6 +1208,10 @@ function buildWorld(seed) {
   rocketShips.length = 0; activeLaunches.clear(); myLaunch = null;
   trees.length = 0;
   magnets.length = 0; stuntRings.length = 0; fireworks.length = 0;
+  // inventory world objects live in `scene`, not worldGroup — tear them down explicitly
+  for (const p of itemProjectiles) scene.remove(p.mesh); itemProjectiles.length = 0;
+  for (const o of oilSlicks) { scene.remove(o.mesh); o.mesh.geometry.dispose(); o.mesh.material.dispose(); } oilSlicks.length = 0;
+  itemBoxes.length = 0;
   if (typeof clearPolice === 'function') clearPolice();
   mapRng = makeRng(((seed == null ? 1 : seed) | 0) >>> 0);
   const R = mapRng;
@@ -1284,6 +1317,7 @@ function buildWorld(seed) {
   buildBeachBall();
   buildMagnets(R);
   buildStuntRings(R);
+  buildItemBoxes(R);
   buildSkidLayer();
 }
 
@@ -2135,6 +2169,15 @@ function updatePolice(dt) {
   if (want >= 1 && police.length < want && policeSpawnCd <= 0) { spawnPolice(); policeSpawnCd = 2.5; }
   while (police.length > want) { const p = police.pop(); scene.remove(p.mesh); }
   for (const p of police) {
+    if (p.frozen > 0) {                       // ❄️ frozen by a Freeze Blast — sit still
+      p.frozen -= dt; p.speed = 0;
+      p.mesh.position.set(p.x, 0, p.z);
+      p.sirenPhase += dt * 8;
+      const ff = Math.sin(p.sirenPhase) > 0;
+      p.mesh.userData.red.material.emissiveIntensity = ff ? 2 : 0.1;
+      p.mesh.userData.blue.material.emissiveIntensity = ff ? 0.1 : 2;
+      continue;
+    }
     const dx = player.pos.x - p.x, dz = player.pos.z - p.z;
     const d = Math.hypot(dx, dz) || 1;
     const th = Math.atan2(dx, dz);
@@ -2153,7 +2196,7 @@ function updatePolice(dt) {
     p.mesh.userData.light.color.setHex(f ? 0xff2222 : 0x2222ff);
     p.mesh.userData.light.intensity = 4;
     for (const w of p.mesh.userData.wheels) w.children.forEach(c => c.rotation.x += p.speed * dt * 2);
-    if (d < 4.5) {                              // PIT manoeuvre — bumps you
+    if (d < 4.5 && player.invuln <= 0) {        // PIT manoeuvre — bumps you (shield/star/ghost blocks it)
       const nx = dx/d, nz = dz/d;
       player.vel.x -= nx * 45 * dt; player.vel.y -= nz * 45 * dt;
       if (Math.random() < 0.04) registerCrash(16);
@@ -2316,6 +2359,314 @@ function updateBountyHud() {
   if (bounty.id === 'crush') prog = ' (' + bounty.prog + '/' + bounty.goal + ')';
   else if (bounty.id === 'coins') prog = ' (' + Math.min(bounty.goal, Math.floor(account.coins) - bounty.startCoins) + '/' + bounty.goal + ')';
   el.innerHTML = '🎯 ' + bounty.text + prog + ' · +' + bounty.reward + '🪙 · ' + Math.ceil(bounty.t) + 's';
+}
+
+/* =====================================================================
+   FEATURE: 3-SLOT ITEM INVENTORY (Mario-Kart style)
+   Drive through floating mystery boxes to grab a random item into one of
+   3 slots. Press 1/2/3 to select a slot, Q to use the selected item.
+   10 items: offensive shells/bombs, AoE lightning/freeze, self-buffs
+   (boost, star, shield, ghost) and a defensive oil-slick trap.
+   ===================================================================== */
+const ITEM_DEFS = [
+  { id:'mushroom', emoji:'🍄', name:'Turbo Mushroom', desc:'Instant speed boost' },
+  { id:'star',     emoji:'⭐', name:'Star Power',     desc:'Invincible + smash anything (8s)' },
+  { id:'green',    emoji:'🐢', name:'Green Shell',    desc:'Fires straight ahead' },
+  { id:'red',      emoji:'🔴', name:'Red Shell',      desc:'Homes onto the nearest rival' },
+  { id:'bomb',     emoji:'💣', name:'Bomb',           desc:'Lobs a big timed explosion' },
+  { id:'shield',   emoji:'🛡️', name:'Shield Bubble',  desc:'Blocks all damage (8s)' },
+  { id:'lightning',emoji:'⚡', name:'Lightning',      desc:'Zaps every rival nearby' },
+  { id:'oil',      emoji:'🛢️', name:'Oil Slick',      desc:'Drops a spin-out trap behind you' },
+  { id:'ghost',    emoji:'👻', name:'Ghost',          desc:'Phase through danger (5s)' },
+  { id:'freeze',   emoji:'❄️', name:'Freeze Blast',   desc:'Freezes nearby cops & traffic' },
+];
+const ITEM_BY_ID = {}; for (const d of ITEM_DEFS) ITEM_BY_ID[d.id] = d;
+
+// shared projectile geo/mats (created once — no per-shot allocation leak)
+const _shellGeo  = new THREE.SphereGeometry(0.6, 12, 10);
+const _greenMat  = new THREE.MeshStandardMaterial({ color:0x33dd44, emissive:0x118822, emissiveIntensity:0.8 });
+const _redMat    = new THREE.MeshStandardMaterial({ color:0xff3322, emissive:0xaa1100, emissiveIntensity:0.9 });
+const _bombGeo   = new THREE.SphereGeometry(0.85, 12, 10);
+const _bombMat   = new THREE.MeshStandardMaterial({ color:0x1b1b1b, emissive:0x550000, emissiveIntensity:0.3, metalness:0.6, roughness:0.4 });
+
+function itemSound(f0, f1) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = 'square'; o.frequency.value = f0; g.gain.value = 0.05;
+  o.connect(g); g.connect(audioCtx.destination); o.start();
+  o.frequency.setTargetAtTime(f1, audioCtx.currentTime, 0.06);
+  g.gain.setTargetAtTime(0, audioCtx.currentTime + 0.12, 0.06);
+  o.stop(audioCtx.currentTime + 0.32);
+}
+
+/* ---- mystery item boxes scattered around the map ---- */
+function buildItemBoxes(R) {
+  R = R || mapRng;
+  const n = WORLD.blocks >= 9 ? 12 : 7;
+  for (let i = 0; i < n; i++) {
+    const gi = 1 + Math.floor(R() * (WORLD.blocks - 1));
+    const gj = 1 + Math.floor(R() * (WORLD.blocks - 1));
+    const x = line(gi) + (R() - 0.5) * 40, z = line(gj) + (R() - 0.5) * 40;
+    const box = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2),
+      new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0x3366ff, emissiveIntensity:0.6,
+        transparent:true, opacity:0.85, metalness:0.3, roughness:0.2 }));
+    box.position.set(x, 2.2, z); worldGroup.add(box);
+    const q = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.16, 8, 14),
+      new THREE.MeshBasicMaterial({ color:0xffffff }));
+    q.position.z = 1.02; box.add(q);
+    itemBoxes.push({ x, z, mesh:box, cooldown:0 });
+  }
+}
+function updateItemBoxes(dt) {
+  for (const b of itemBoxes) {
+    if (b.cooldown > 0) {
+      b.cooldown -= dt; b.mesh.visible = b.cooldown <= 0;
+      if (b.cooldown > 0) continue;
+    }
+    b.mesh.rotation.y += dt * 1.6; b.mesh.rotation.x += dt * 0.8;
+    b.mesh.position.y = 2.2 + Math.sin(clock.elapsedTime * 2 + b.x) * 0.3;
+    b.mesh.material.emissive.setHSL((clock.elapsedTime * 0.25 + b.x * 0.1) % 1, 0.85, 0.5);
+    const dx = player.pos.x - b.x, dz = player.pos.z - b.z;
+    if (dx*dx + dz*dz < 9 && Math.abs(player.pos.y - 2.2) < 4) {
+      if (giveRandomItem()) { b.mesh.visible = false; b.cooldown = 8; }
+    }
+  }
+}
+
+/* ---- slot management ---- */
+function freeSlot() { for (let i = 0; i < 3; i++) if (!inventory[i]) return i; return -1; }
+function giveRandomItem() {
+  const slot = freeSlot();
+  if (slot < 0) return false;                       // full — leave the box for later
+  const def = ITEM_DEFS[Math.floor(Math.random() * ITEM_DEFS.length)];
+  inventory[slot] = def.id;
+  if (!inventory[invSelected]) invSelected = slot;
+  itemSound(440, 1320);
+  showStuntMsg(def.emoji + ' GOT ' + def.name.toUpperCase() + '!');
+  renderInventory();
+  return true;
+}
+function selectSlot(i) { invSelected = Math.max(0, Math.min(2, i)); renderInventory(); }
+function useSelectedItem() {
+  let slot = invSelected;
+  if (!inventory[slot]) slot = inventory.findIndex((x) => x);   // fall back to first filled
+  if (slot < 0) return;
+  if (!gameStarted || paused || garageOpen || player.flipped || player.trapped) return;
+  const id = inventory[slot];
+  if (!id) return;
+  inventory[slot] = null;
+  applyItem(id);
+  renderInventory();
+}
+function applyItem(id) {
+  switch (id) {
+    case 'mushroom':
+      player.boostTimer = Math.max(player.boostTimer, 2.6);
+      player.nitro = Math.min(1, player.nitro + 0.5);
+      showStuntMsg('🍄 TURBO BOOST!'); itemSound(300, 980); break;
+    case 'star':      startStar(8); break;
+    case 'green':     fireItemShell(false); break;
+    case 'red':       fireItemShell(true); break;
+    case 'bomb':      dropItemBomb(); break;
+    case 'shield':    startShield(8); break;
+    case 'lightning': castLightning(); break;
+    case 'oil':       dropOil(); break;
+    case 'ghost':     startGhost(5); break;
+    case 'freeze':    freezeBlast(); break;
+  }
+}
+
+/* ---- self-buff effects (star / shield / ghost) share player.invuln ---- */
+function setAura(kind, color) {
+  removeAura();
+  if (!player.mesh) return;
+  const m = new THREE.Mesh(new THREE.SphereGeometry(3.2, 16, 12),
+    new THREE.MeshBasicMaterial({ color, transparent:true, opacity:0.22, depthWrite:false, blending:THREE.AdditiveBlending }));
+  player.mesh.add(m); auraMesh = m; auraKind = kind;
+}
+function removeAura() { if (auraMesh && auraMesh.parent) auraMesh.parent.remove(auraMesh); auraMesh = null; auraKind = null; }
+function startStar(t)   { player._starT = t;   showStuntMsg('⭐ STAR POWER!');  itemSound(520, 1560); setAura('star', 0xffd23f); }
+function startShield(t) { player._shieldT = t; showStuntMsg('🛡️ SHIELD UP!');   itemSound(400, 820);  setAura('shield', 0x33aaff); }
+function startGhost(t)  { player._ghostT = t;  showStuntMsg('👻 GHOST MODE!');  itemSound(640, 300);  setAura('ghost', 0xccccff); }
+function updateItemEffects(dt) {
+  let active = false, kind = null;
+  if (player._starT > 0)   { player._starT   -= dt; active = true; kind = 'star'; player.boostTimer = Math.max(player.boostTimer, 0.2); starRam(dt); }
+  if (player._shieldT > 0) { player._shieldT -= dt; active = true; kind = kind || 'shield'; }
+  if (player._ghostT > 0)  { player._ghostT  -= dt; active = true; kind = kind || 'ghost'; }
+  if (active) player.invuln = Math.max(player.invuln, dt + 0.05);   // immunity while any buff runs
+  // attach / reattach / pulse / cleanup the aura glow
+  if (!active) { if (auraMesh) removeAura(); }
+  else {
+    if ((!auraMesh || auraMesh.parent !== player.mesh) && player.mesh) {
+      setAura(kind, kind === 'star' ? 0xffd23f : kind === 'shield' ? 0x33aaff : 0xccccff);
+    }
+    if (auraMesh) {
+      if (auraKind === 'star') auraMesh.material.color.setHSL((clock.elapsedTime * 0.8) % 1, 1, 0.55);
+      auraMesh.material.opacity = 0.16 + Math.abs(Math.sin(clock.elapsedTime * 4)) * 0.14;
+    }
+  }
+}
+function starRam(dt) {
+  const px = player.pos.x, pz = player.pos.z, RR2 = 25;
+  for (const [id, n] of npcCars) { const t = n.target; if (!t) continue; const dx = t.x-px, dz = t.z-pz; if (dx*dx+dz*dz < RR2) { const d = Math.hypot(dx,dz)||1; _itemDamageNpc(id, dx/d, dz/d); } }
+  for (let k = police.length-1; k >= 0; k--) { const p = police[k]; const dx = p.x-px, dz = p.z-pz; if (dx*dx+dz*dz < RR2) { smallExplosion(p.x, 1, p.z); scene.remove(p.mesh); police.splice(k,1); } }
+  for (const [id, r] of remotePlayers) { const t = r.target; if (!t) continue; const dx = t.x-px, dz = t.z-pz; if (dx*dx+dz*dz < RR2 && Math.random() < 0.3) _itemDamageRemote(id, 30); }
+}
+
+/* ---- damage relays (reuse the same server events as the turret) ---- */
+function _itemDamageNpc(id, dirx, dirz) {
+  if (offlineMode) offlineSim.knock(id, dirx*70, dirz*70, 18, true, 100);
+  else if (connected) socket.emit('hitNpc', { id, dmg:100, dx:dirx, dz:dirz });
+}
+function _itemDamageRemote(id, dmg) { if (connected) socket.emit('hitPlayer', { targetId:id, dmg }); }
+function _itemDamagePed(id) { if (offlineMode) offlineSim.killPed(id); else if (connected) socket.emit('hitPed', { id }); }
+
+/* ---- shells (green = straight, red = homing) ---- */
+function fireItemShell(homing) {
+  const aim = player.heading, dx = Math.sin(aim), dz = Math.cos(aim), sp = 72;
+  const mesh = new THREE.Mesh(_shellGeo, homing ? _redMat : _greenMat);
+  const x = player.pos.x + dx*3, y = player.pos.y + 1.0, z = player.pos.z + dz*3;
+  mesh.position.set(x, y, z); scene.add(mesh);
+  itemProjectiles.push({ mesh, x, y, z, vx:dx*sp, vz:dz*sp, kind:homing?'red':'green', life:4, homing });
+  showStuntMsg(homing ? '🔴 RED SHELL!' : '🐢 GREEN SHELL!');
+  itemSound(700, 520); shootSound();
+}
+function dropItemBomb() {
+  const aim = player.heading, dx = Math.sin(aim), dz = Math.cos(aim);
+  const x = player.pos.x + dx*4, y = player.pos.y + 1, z = player.pos.z + dz*4;
+  const mesh = new THREE.Mesh(_bombGeo, _bombMat); mesh.position.set(x, y, z); scene.add(mesh);
+  itemProjectiles.push({ mesh, x, y, z, vx:dx*28, vz:dz*28, kind:'bomb', life:1.3 });
+  showStuntMsg('💣 BOMB OUT!'); itemSound(200, 110);
+}
+function _removeProj(p, i) { scene.remove(p.mesh); itemProjectiles.splice(i, 1); }  // shared geo/mat: don't dispose
+function _nearestTargetAhead(p) {
+  let best = null, bd = 6400;   // 80m
+  const consider = (x, z) => { const dx = x-p.x, dz = z-p.z, d2 = dx*dx+dz*dz; if (d2 < bd) { bd = d2; best = { x, z }; } };
+  for (const n of npcCars.values()) if (n.target) consider(n.target.x, n.target.z);
+  for (const r of remotePlayers.values()) if (r.target) consider(r.target.x, r.target.z);
+  for (const pl of police) consider(pl.x, pl.z);
+  return best;
+}
+function _shellCollide(p) {
+  const HR2 = 11.6;   // ~3.4m
+  for (const [id, n] of npcCars) { const t = n.target; if (!t) continue; const dx = t.x-p.x, dz = t.z-p.z; if (dx*dx+dz*dz < HR2) return { kind:'n', id }; }
+  for (const [id, r] of remotePlayers) { const t = r.target; if (!t) continue; const dx = t.x-p.x, dz = t.z-p.z; if (dx*dx+dz*dz < HR2) return { kind:'p', id }; }
+  for (const pl of police) { const dx = pl.x-p.x, dz = pl.z-p.z; if (dx*dx+dz*dz < HR2) return { kind:'police', police:pl }; }
+  for (const [id, pd] of pedMeshes) { const t = pd.target; if (!t) continue; const dx = t.x-p.x, dz = t.z-p.z; if (dx*dx+dz*dz < HR2) return { kind:'d', id }; }
+  for (const tr of trees) { if (tr.fallen) continue; const dx = tr.x-p.x, dz = tr.z-p.z; if (dx*dx+dz*dz < HR2) return { kind:'t', tree:tr }; }
+  return null;
+}
+function _applyShellHit(hit, dirx, dirz, x, y, z) {
+  smallExplosion(x, y, z); explosionSound();
+  if (hit.kind === 'n') _itemDamageNpc(hit.id, dirx, dirz);
+  else if (hit.kind === 'p') _itemDamageRemote(hit.id, 40);
+  else if (hit.kind === 'police') { const i = police.indexOf(hit.police); if (i >= 0) { scene.remove(hit.police.mesh); police.splice(i, 1); } wanted = Math.max(0, wanted - 1); }
+  else if (hit.kind === 'd') _itemDamagePed(hit.id);
+  else if (hit.kind === 't') destroyTree(hit.tree);
+}
+function updateItemProjectiles(dt) {
+  for (let i = itemProjectiles.length - 1; i >= 0; i--) {
+    const p = itemProjectiles[i];
+    p.life -= dt;
+    if (p.kind === 'bomb') {
+      p.vx *= 0.95; p.vz *= 0.95;
+      p.x += p.vx*dt; p.z += p.vz*dt;
+      p.mesh.position.set(p.x, 1 + Math.abs(Math.sin(p.life*12)) * 0.3, p.z);
+      p.mesh.material.emissiveIntensity = 0.3 + (1.3 - p.life) * 1.6;
+      if (p.life <= 0) { itemAoeBlast(p.x, 1, p.z, 12, true); _removeProj(p, i); }
+      continue;
+    }
+    if (p.homing) {
+      const tgt = _nearestTargetAhead(p);
+      if (tgt) { const dx = tgt.x-p.x, dz = tgt.z-p.z, d = Math.hypot(dx,dz)||1;
+        p.vx += (dx/d*72 - p.vx) * Math.min(1, dt*4);
+        p.vz += (dz/d*72 - p.vz) * Math.min(1, dt*4); }
+    }
+    p.x += p.vx*dt; p.z += p.vz*dt;
+    p.mesh.position.set(p.x, p.y, p.z); p.mesh.rotation.x += dt*10;
+    const hit = _shellCollide(p);
+    if (hit) { const dl = Math.hypot(p.vx, p.vz) || 1; _applyShellHit(hit, p.vx/dl, p.vz/dl, p.x, p.y, p.z); _removeProj(p, i); continue; }
+    if (p.life <= 0) { smallExplosion(p.x, p.y, p.z); _removeProj(p, i); }
+  }
+}
+
+/* ---- AoE blast (bomb) ---- */
+function itemAoeBlast(x, y, z, R, big) {
+  if (big) { bigExplosion(x, y, z); explosionSound(); } else smallExplosion(x, y, z);
+  const R2 = R*R;
+  for (const [id, n] of npcCars) { const t = n.target; if (!t) continue; const dx = t.x-x, dz = t.z-z; if (dx*dx+dz*dz < R2) { const d = Math.hypot(dx,dz)||1; _itemDamageNpc(id, dx/d, dz/d); } }
+  for (const [id, r] of remotePlayers) { const t = r.target; if (!t) continue; const dx = t.x-x, dz = t.z-z; if (dx*dx+dz*dz < R2) _itemDamageRemote(id, big?40:25); }
+  for (const [id, pd] of pedMeshes) { const t = pd.target; if (!t) continue; const dx = t.x-x, dz = t.z-z; if (dx*dx+dz*dz < R2) _itemDamagePed(id); }
+  for (let k = police.length-1; k >= 0; k--) { const p = police[k]; const dx = p.x-x, dz = p.z-z; if (dx*dx+dz*dz < R2) { scene.remove(p.mesh); police.splice(k,1); wanted = Math.max(0, wanted-1); } }
+  for (const tr of trees) { if (tr.fallen) continue; const dx = tr.x-x, dz = tr.z-z; if (dx*dx+dz*dz < R2) destroyTree(tr); }
+}
+
+/* ---- lightning: zap every rival in range ---- */
+function castLightning() {
+  showStuntMsg('⚡ LIGHTNING!'); itemSound(1400, 320); flashHit();
+  const px = player.pos.x, pz = player.pos.z, R2 = 3600; let any = false;   // 60m
+  for (const [id, n] of npcCars) { const t = n.target; if (!t) continue; const dx = t.x-px, dz = t.z-pz; if (dx*dx+dz*dz < R2) { const d = Math.hypot(dx,dz)||1; _itemDamageNpc(id, dx/d, dz/d); _lightningBolt(t.x, t.z); any = true; } }
+  for (const [id, r] of remotePlayers) { const t = r.target; if (!t) continue; const dx = t.x-px, dz = t.z-pz; if (dx*dx+dz*dz < R2) { _itemDamageRemote(id, 30); _lightningBolt(t.x, t.z); any = true; } }
+  for (let k = police.length-1; k >= 0; k--) { const p = police[k]; const dx = p.x-px, dz = p.z-pz; if (dx*dx+dz*dz < R2) { _lightningBolt(p.x, p.z); scene.remove(p.mesh); police.splice(k,1); any = true; } }
+  if (any) wanted = Math.max(0, wanted - 1);
+}
+function _lightningBolt(x, z) { emitShockwave(x, 0.1, z, 8); for (let i = 0; i < 5; i++) emitFire(x + (Math.random()-0.5)*2, Math.random()*6, z + (Math.random()-0.5)*2, 6, 0.6); }
+
+/* ---- oil slick: drop a spin-out trap behind you ---- */
+function dropOil() {
+  const aim = player.heading;
+  const x = player.pos.x - Math.sin(aim)*5, z = player.pos.z - Math.cos(aim)*5;
+  const mesh = new THREE.Mesh(new THREE.CircleGeometry(4, 20),
+    new THREE.MeshBasicMaterial({ color:0x0b0b12, transparent:true, opacity:0.72, depthWrite:false }));
+  mesh.rotation.x = -Math.PI/2; mesh.position.set(x, 0.08, z); scene.add(mesh);
+  oilSlicks.push({ x, z, mesh, life:20 });
+  showStuntMsg('🛢️ OIL SLICK!'); itemSound(180, 90);
+}
+function updateOilSlicks(dt) {
+  for (let i = oilSlicks.length - 1; i >= 0; i--) {
+    const o = oilSlicks[i]; o.life -= dt;
+    if (o.life <= 0) { scene.remove(o.mesh); o.mesh.geometry.dispose(); o.mesh.material.dispose(); oilSlicks.splice(i, 1); continue; }
+    o.mesh.material.opacity = Math.min(0.72, o.life * 0.5);
+    for (const p of police) { const dx = p.x-o.x, dz = p.z-o.z; if (dx*dx+dz*dz < 16) { p.heading += (Math.random()-0.5)*24*dt; p.speed *= 0.9; } }
+    for (const [id, n] of npcCars) { const t = n.target; if (!t) continue; const dx = t.x-o.x, dz = t.z-o.z; if (dx*dx+dz*dz < 12 && Math.random() < 0.05) {
+      if (offlineMode) offlineSim.knock(id, (Math.random()-0.5)*30, (Math.random()-0.5)*30, 5, false, 0);
+      else if (connected) socket.emit('hitNpc', { id, dmg:0, dx:(Math.random()-0.5), dz:(Math.random()-0.5) }); } }
+  }
+}
+
+/* ---- freeze blast: stun cops & traffic around you ---- */
+function freezeBlast() {
+  showStuntMsg('❄️ FREEZE BLAST!'); itemSound(900, 1900);
+  const px = player.pos.x, pz = player.pos.z, R2 = 3025;   // 55m
+  for (const p of police) { const dx = p.x-px, dz = p.z-pz; if (dx*dx+dz*dz < R2) { p.frozen = 3; p.speed = 0; _iceBurst(p.x, p.z); } }
+  for (const n of npcCars.values()) { const t = n.target; if (!t) continue; const dx = t.x-px, dz = t.z-pz; if (dx*dx+dz*dz < R2) _iceBurst(t.x, t.z); }
+}
+function _iceBurst(x, z) { emitShockwave(x, 0.1, z, 7); for (let i = 0; i < 4; i++) emitSmoke(x + (Math.random()-0.5)*2, 1 + Math.random()*2, z + (Math.random()-0.5)*2); }
+
+/* ---- per-frame driver + HUD ---- */
+function updateItems(dt) {
+  updateItemBoxes(dt);
+  updateItemProjectiles(dt);
+  updateOilSlicks(dt);
+  updateItemEffects(dt);
+}
+function renderInventory() {
+  for (let i = 0; i < 3; i++) {
+    const slot = document.getElementById('invSlot' + i);
+    if (!slot) continue;
+    const id = inventory[i], def = id ? ITEM_BY_ID[id] : null;
+    const em = slot.querySelector('.inv-emoji'); if (em) em.textContent = def ? def.emoji : '';
+    slot.classList.toggle('inv-sel', i === invSelected);
+    slot.classList.toggle('inv-empty', !id);
+  }
+  const nameEl = document.getElementById('invName');
+  if (nameEl) { const sel = inventory[invSelected], d = sel ? ITEM_BY_ID[sel] : null;
+    nameEl.textContent = d ? (d.emoji + ' ' + d.name + ' — ' + d.desc) : ''; }
+}
+function resetInventory() {
+  inventory[0] = inventory[1] = inventory[2] = null; invSelected = 0;
+  player._starT = player._shieldT = player._ghostT = 0;
+  removeAura(); renderInventory();
 }
 
 /* =====================================================================
@@ -3626,6 +3977,7 @@ function animate() {
     updateFireworks(dt);
     updateRadio(dt);
     updateBounty(dt);
+    updateItems(dt);
 
     // send input ~60Hz
     if (performance.now() - lastInputSent > 1000/CONFIG.INPUT_HZ) {
@@ -3863,6 +4215,9 @@ function drawMinimap() {
   if (beachBall) { const [mx,my]=toMap(beachBall.position.x, beachBall.position.z); ctx.fillStyle='#ffffff'; ctx.beginPath(); ctx.arc(mx,my,2.5,0,7); ctx.fill(); }
   if (ufo && ufo.visible) { const [mx,my]=toMap(ufo.position.x, ufo.position.z); ctx.fillStyle='#5fffd0'; ctx.beginPath(); ctx.arc(mx,my,3,0,7); ctx.fill(); }
   for (const p of police) { const [mx,my]=toMap(p.x, p.z); ctx.fillStyle = (Math.sin(p.sirenPhase)>0)?'#ff3333':'#3366ff'; ctx.beginPath(); ctx.arc(mx,my,2.5,0,7); ctx.fill(); }
+  // item boxes (rainbow squares)
+  ctx.fillStyle = '#62a0ff';
+  for (const b of itemBoxes) { if (!b.mesh.visible) continue; const [mx,my]=toMap(b.x, b.z); ctx.fillRect(mx-2, my-2, 4, 4); }
 
   // self
   const [sx,sy]=toMap(player.pos.x, player.pos.z);
@@ -3922,6 +4277,8 @@ function setupInput() {
     if (e.code==='KeyP' && gameStarted) { togglePhotoMode(); }
     if (e.code==='KeyU' && gameStarted) { toggleUnderglow(); }
     if (e.code==='KeyM' && gameStarted) { toggleRadio(); }
+    if (gameStarted && (e.code==='Digit1'||e.code==='Digit2'||e.code==='Digit3')) { selectSlot(+e.code.slice(-1)-1); }
+    if (e.code==='KeyQ' && gameStarted) { useSelectedItem(); }
     if (e.code==='Enter' && gameStarted) { openChat(); }
     if (e.code==='Escape' && gameStarted) { if (garageOpen) closeGarage(); else togglePause(); }
     // JUMP — Space tap (also handbrakes; that's intentional). Only on
@@ -4416,6 +4773,7 @@ function startOfflineGame() {
   player.flipped=false; player.respawnTimer=0; player.airborne=false; player.invuln=1.5;
   player.trapped=false; player.planeThrottle=0; beingControlled=false; adminControlTarget=null;
   player.health=100; player.lastHitMs=0; player.fireCooldown=0;
+  resetInventory();
   hideFlipMsg();
   freeClock = 0;
 
@@ -4910,6 +5268,7 @@ function onGameStart(d) {
   player.flipped=false; player.respawnTimer=0; player.airborne=false; player.invuln=1.5;
   player.trapped=false; player.planeThrottle=0; beingControlled=false; adminControlTarget=null;
   player.health=100; player.lastHitMs=0; player.fireCooldown=0;
+  resetInventory();
   hideFlipMsg();
   freeClock = 0;
 
