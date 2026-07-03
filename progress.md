@@ -60,6 +60,66 @@ Tracking implementation of the game described in `prompt.md`.
 - [x] Leave/quit/back-to-lobby reset offline state and stop the local sim
 - [x] Module script passes `node --check`
 
+## Batch 2 (2026-05-27) — collisions, physics, multiplayer
+- [x] Server-authoritative collisions: NPCs get knocked/launched when rammed (knockVx/vz/vy + spin, broadcast with y)
+- [x] Player-vs-player collision impulses emitted to both clients ('collision' event, per-pair cooldown)
+- [x] Client: collision radius 4.2 (no more phasing), softer stop, ram launches/flips, applies server impulses
+- [x] Air control: A/D roll, W/S pitch, yaw while airborne for clean landings
+- [x] Building roofs are solid — land on top & drive off; gravity drops you safely (no death)
+- [x] Change car mid-game via pause -> GARAGE (rebuilds live mesh, syncs to others)
+- [x] Max players raised to 32
+- [x] Persistent "🌍 Official Open World" public server (always started, survives empty, code PUBLIC)
+- [x] Fixed: can now JOIN a public game already in progress (late-joiner gets gameStart + spawn)
+- [x] Player Y clamp raised server-side for building tops / future flight
+
+## Batch 3 (2026-05-27) — race, airplane, shop, random maps, admin
+- [x] Race mode: host picks "Race" in lobby; 3-lap checkpoint circuit, 5s countdown,
+      live positions (server-ranked), results screen, coin rewards (1st=400…). Works solo offline too.
+- [x] Airplane vehicle: W/S throttle, A/D bank-turn, SPACE climb; take off, fly over the city, land.
+- [x] Currency + upgrades: earn coins driving/ramming/racing; SHOP (menu + pause) buys
+      Top Speed/Accel/Handling/Brakes/Nitro (5 levels each). Saved in localStorage; applies to all cars.
+- [x] Random maps: server sends a mapSeed each game; clients build the SAME seeded layout
+      (buildings/parks/trees/ramps/boost pads vary; road grid stays fixed so NPCs align). Offline gets a fresh seed.
+- [x] Admin/cheats: host enables "Cheats" in lobby settings -> ADMIN PANEL in pause.
+      Per-player: Kick, Trap, Free, Fly, Heal, Boost, Bring-to-me, and Control (puppet via input relay).
+
+## Verified (server, automated socket test)
+- race lobby start -> gameStart carries seed + 8 checkpoints + 3 laps + mode
+- raceProgress(finished) -> raceFinished (place + reward) + live raceStandings
+- adminCommand trap relayed to target; kick removes target ('kicked')
+- client module + server both syntax-clean
+
+## Caveat: "always online" public server
+- The persistent 🌍 Official Open World lobby is created on server boot and survives empty.
+- BUT Render free tier sleeps the whole process after ~15 min idle -> in-memory state resets and
+  first request after idle is slow. True 24/7 needs a paid instance or an external keep-alive pinger.
+
+## Batch 4 (2026-05-28) — combat: health + turret
+- [x] Fixed: remote players' mesh now rebuilds when they change vehicle/colour (planes no longer show as cars)
+- [x] Health system: 100 HP, HUD bar, slow regen after 4s, destroy -> explosion -> respawn (full heal)
+- [x] Turret: buy once in shop (🪙1500); fire with F / left-click; networked tracers everyone sees
+- [x] Hits reduce target health (server relays fire/hitPlayer->damaged); kill feed + 🪙150 per kill
+- [x] Remote players show a name-tag health bar + turret barrel if equipped
+- [x] Offline: turret shots knock NPCs around
+- [x] Verified via socket test: fire relay, damaged, killFeed, hp/turret in playerUpdate
+
+## Batch 5 (2026-05-28) — server-side admin code
+- [x] "🔐 Admin Login" on the home menu: enter a code, server validates it (code is in server.js
+      only — never shipped to the browser, so it can't be inspected). Code: 6741 (override w/ ADMIN_CODE env).
+- [x] Correct code -> super-admin for the session: ADMIN PANEL works in ANY lobby (bypasses host/cheats),
+      infinite coins (∞ shown, all shop items + turret free), manage everyone in the lobby.
+- [x] superAdmins tracked server-side per socket; adminCommand/controlInput honor it; cleared on disconnect.
+- [x] Verified: wrong code rejected, 6741 accepted, admin command works on the public server with cheats OFF.
+
+## Deploy reminder (unchanged)
+- Server changes require REDEPLOYING server.js to Render.
+- Client changes require pushing index.html to GitHub Pages.
+- The admin code 6741 lives in server.js (on Render) — players only ever download index.html, so it stays hidden.
+
+## Deploy reminder
+- Server changes (collisions, persistent lobby, 32 players, join-in-progress) require REDEPLOYING server.js to Render.
+- Client changes require pushing index.html to GitHub Pages.
+
 ## Notes / Decisions
 - Single self-contained `index.html`: Three.js via ESM importmap (unpkg r0.160),
   Socket.IO client via CDN global `io`.
