@@ -1186,11 +1186,14 @@ function initThree() {
   // Perf: skip MSAA on mobile GPUs (expensive), ask for the discrete GPU.
   renderer = new THREE.WebGLRenderer({ canvas, antialias: !IS_MOBILE, powerPreference: 'high-performance' });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  // Cap the render resolution — high-DPI phones default to 3× which quadruples
-  // the pixels to shade. 1.5× on mobile / 2× desktop keeps it sharp but fast.
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, IS_MOBILE ? 1.5 : 2));
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = IS_MOBILE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+  // Cap the render resolution — high-DPI phones/iPads default to 2–3× which
+  // multiplies the pixels to shade. Render at 1× on mobile (huge fill-rate win)
+  // and 2× on desktop.
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, IS_MOBILE ? 1 : 2));
+  // PERF: shadows are a whole extra scene pass every frame — brutal on iOS.
+  // Off on mobile entirely; soft shadows stay on desktop.
+  renderer.shadowMap.enabled = !IS_MOBILE;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   // film-style tone mapping — richer colors, no blown-out whites
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -1307,34 +1310,62 @@ function buildWorld(seed) {
 
   const B = WORLD.blocks, SP = WORLD.spacing, H = WORLD.half;
 
-  // ground / grass
-  const groundMat = new THREE.MeshStandardMaterial({ color:0x4f8f3f, roughness:1 });
+  // ground / grass — Lambert on mobile (cheaper fragment shader for this
+  // full-screen surface; PBR/Standard is costly on iOS GPUs)
+  const groundMat = IS_MOBILE
+    ? new THREE.MeshLambertMaterial({ color:0x4f8f3f })
+    : new THREE.MeshStandardMaterial({ color:0x4f8f3f, roughness:1 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(H*2+200, H*2+200), groundMat);
   ground.rotation.x = -Math.PI/2; ground.position.y = -0.02; ground.receiveShadow = true;
   worldGroup.add(ground);
 
-  // roads (grid lines) — kept deterministic so NPC waypoints always line up
-  const roadMat = new THREE.MeshStandardMaterial({ color:0x33363d, roughness:0.9 });
-  const lineMat = new THREE.MeshStandardMaterial({ color:0xddddaa, roughness:0.8, emissive:0x222200, emissiveIntensity:0.2 });
+  // roads (grid lines) — kept deterministic so NPC waypoints always line up.
+  // PERF: lane dashes used to be ~4000 individual meshes (≈4000 draw calls,
+  // which crawls on mobile GPUs). They're now two InstancedMeshes (2 draws),
+  // and the road strips share geometry.
+  const roadMat = IS_MOBILE
+    ? new THREE.MeshLambertMaterial({ color:0x33363d })
+    : new THREE.MeshStandardMaterial({ color:0x33363d, roughness:0.9 });
+  const lineMat = IS_MOBILE
+    ? new THREE.MeshLambertMaterial({ color:0xddddaa, emissive:0x222200 })
+    : new THREE.MeshStandardMaterial({ color:0xddddaa, roughness:0.8, emissive:0x222200, emissiveIntensity:0.2 });
   const roadW = 12;
   const span = B * SP + roadW;
+  const _dummy = new THREE.Object3D();
+  const roadGeoV = new THREE.BoxGeometry(roadW, 0.2, span);
+  const roadGeoH = new THREE.BoxGeometry(span, 0.2, roadW);
+  const dashV = [], dashH = [];
   for (let i=0; i<=B; i++) {
     const c = line(i);
-    const rv = new THREE.Mesh(new THREE.BoxGeometry(roadW, 0.2, span), roadMat);
-    rv.position.set(c, 0.02, 0); rv.receiveShadow = true; worldGroup.add(rv);
-    const rh = new THREE.Mesh(new THREE.BoxGeometry(span, 0.2, roadW), roadMat);
-    rh.position.set(0, 0.02, c); rh.receiveShadow = true; worldGroup.add(rh);
+    const rv = new THREE.Mesh(roadGeoV, roadMat);
+    rv.position.set(c, 0.02, 0); rv.receiveShadow = !IS_MOBILE; worldGroup.add(rv);
+    const rh = new THREE.Mesh(roadGeoH, roadMat);
+    rh.position.set(0, 0.02, c); rh.receiveShadow = !IS_MOBILE; worldGroup.add(rh);
     for (let d=-span/2; d<span/2; d+=10) {
-      const dv = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.21,4), lineMat);
-      dv.position.set(c, 0.04, d+2); worldGroup.add(dv);
-      const dh = new THREE.Mesh(new THREE.BoxGeometry(4,0.21,0.4), lineMat);
-      dh.position.set(d+2, 0.04, c); worldGroup.add(dh);
+      dashV.push([c, 0.04, d+2]);
+      dashH.push([d+2, 0.04, c]);
     }
   }
+  const buildDashes = (geo, list) => {
+    const im = new THREE.InstancedMesh(geo, lineMat, list.length);
+    im.castShadow = false; im.receiveShadow = false; im.frustumCulled = false;
+    for (let k=0; k<list.length; k++) { _dummy.position.set(list[k][0], list[k][1], list[k][2]); _dummy.updateMatrix(); im.setMatrixAt(k, _dummy.matrix); }
+    im.instanceMatrix.needsUpdate = true;
+    worldGroup.add(im);
+  };
+  buildDashes(new THREE.BoxGeometry(0.4, 0.21, 4), dashV);
+  buildDashes(new THREE.BoxGeometry(4, 0.21, 0.4), dashH);
 
   // sidewalks + buildings + trees in each block (randomized by seed)
   // every block gets ONE of several "district" flavors so the map is varied.
-  const sideMat = new THREE.MeshStandardMaterial({ color:0x9aa0a8, roughness:1 });
+  const sideMat = IS_MOBILE
+    ? new THREE.MeshLambertMaterial({ color:0x9aa0a8 })
+    : new THREE.MeshStandardMaterial({ color:0x9aa0a8, roughness:1 });
+  const blockSize = SP - roadW;
+  // PERF: all B×B sidewalk slabs are one InstancedMesh (1 draw call).
+  const swMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(blockSize, 0.3, blockSize), sideMat, B*B);
+  swMesh.castShadow = false; swMesh.receiveShadow = !IS_MOBILE; swMesh.frustumCulled = false;
+  let swIdx = 0;
   // pick exactly-one "landmark" district (stadium) — placed somewhere central
   const stadiumI = 2 + Math.floor(R()*(B-3));
   const stadiumJ = 2 + Math.floor(R()*(B-3));
@@ -1342,10 +1373,9 @@ function buildWorld(seed) {
     for (let j=0; j<B; j++) {
       const cx = (line(i)+line(i+1))/2;
       const cz = (line(j)+line(j+1))/2;
-      const blockSize = SP - roadW;
 
-      const sw = new THREE.Mesh(new THREE.BoxGeometry(blockSize, 0.3, blockSize), sideMat);
-      sw.position.set(cx, 0.06, cz); sw.receiveShadow = true; worldGroup.add(sw);
+      _dummy.position.set(cx, 0.06, cz); _dummy.rotation.set(0,0,0); _dummy.updateMatrix();
+      swMesh.setMatrixAt(swIdx++, _dummy.matrix);
 
       // pick a district type (seeded). stadium is fixed at one block.
       let kind;
@@ -1361,7 +1391,7 @@ function buildWorld(seed) {
       }
 
       if (kind === 'park') {
-        const nT = 4 + Math.floor(R()*5);
+        const nT = (IS_MOBILE ? 2 : 4) + Math.floor(R()*(IS_MOBILE ? 2 : 5));
         for (let t=0; t<nT; t++) addTree(cx + (R()-0.5)*blockSize*0.8, cz + (R()-0.5)*blockSize*0.8);
         // ~half of parks get a fountain centerpiece
         if (R() < 0.5) addFountain(cx, cz);
@@ -1393,6 +1423,8 @@ function buildWorld(seed) {
       }
     }
   }
+  swMesh.instanceMatrix.needsUpdate = true;
+  worldGroup.add(swMesh);
 
   buildHighwayLoop();
   buildTunnel();
@@ -1459,18 +1491,22 @@ function addBuilding(x, z, w, d, h) {
   const col = new THREE.Color().setHSL(0.6, 0.1, 0.35 + mapRng()*0.3);
   const mat = new THREE.MeshStandardMaterial({ color: col, roughness:0.8, metalness:0.1 });
   const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-  b.position.set(x, h/2, z); b.castShadow = true; b.receiveShadow = true;
+  b.position.set(x, h/2, z); b.castShadow = !IS_MOBILE; b.receiveShadow = !IS_MOBILE;
   worldGroup.add(b);
-  const winMat = new THREE.MeshStandardMaterial({ color:0x335577, emissive:0xffdd88, emissiveIntensity:0.0 });
-  b.userData.winMat = winMat;
-  const rows = Math.floor(h/4), cols = Math.floor(w/3);
-  const grid = new THREE.InstancedMesh(new THREE.BoxGeometry(1.2,1.8,0.1), winMat, rows*cols);
-  let idx=0; const dummy = new THREE.Object3D();
-  for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
-    dummy.position.set(-w/2 + 2 + c*3, -h/2 + 3 + r*4, d/2+0.06);
-    dummy.updateMatrix(); grid.setMatrixAt(idx++, dummy.matrix);
+  // PERF: the per-window InstancedMesh is one extra draw call per building and
+  // only shows as lit windows at night — skip it entirely on mobile.
+  if (!IS_MOBILE) {
+    const winMat = new THREE.MeshStandardMaterial({ color:0x335577, emissive:0xffdd88, emissiveIntensity:0.0 });
+    b.userData.winMat = winMat;
+    const rows = Math.floor(h/4), cols = Math.floor(w/3);
+    const grid = new THREE.InstancedMesh(new THREE.BoxGeometry(1.2,1.8,0.1), winMat, rows*cols);
+    let idx=0; const dummy = new THREE.Object3D();
+    for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+      dummy.position.set(-w/2 + 2 + c*3, -h/2 + 3 + r*4, d/2+0.06);
+      dummy.updateMatrix(); grid.setMatrixAt(idx++, dummy.matrix);
+    }
+    b.add(grid);
   }
-  b.add(grid);
   buildingBoxes.push({ minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2, top:h });
 }
 
@@ -1847,9 +1883,9 @@ function animateBouncePads(dt) {
 function buildClouds() {
   cloudGroup = new THREE.Group();
   const mat = new THREE.MeshLambertMaterial({ color:0xffffff, transparent:true, opacity:0.85 });
-  for (let i=0;i<14;i++){
+  for (let i=0;i<(IS_MOBILE?6:14);i++){
     const c = new THREE.Group();
-    const n = 3 + Math.floor(Math.random()*3);
+    const n = (IS_MOBILE?2:3) + Math.floor(Math.random()*3);
     for (let k=0;k<n;k++){
       const puff = new THREE.Mesh(new THREE.SphereGeometry(8+Math.random()*8, 7, 5), mat);
       puff.position.set((Math.random()-0.5)*24, (Math.random()-0.5)*4, (Math.random()-0.5)*14);
