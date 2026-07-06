@@ -425,7 +425,7 @@
   <div id="controlsHint">
     WASD / Arrows — Drive &nbsp; SPACE — Handbrake / Jump<br/>
     In air: A/D roll · W/S pitch (line up your landing)<br/>
-    SHIFT — Nitro &nbsp; H — Horn &nbsp; R — Respawn &nbsp; F — Shoot &nbsp; P — Photo Mode<br/>
+    SHIFT — Nitro (tap = car ability, e.g. ⚡ Bolt blink) &nbsp; H — Horn &nbsp; R — Respawn &nbsp; F — Shoot &nbsp; P — Photo<br/>
     U — Underglow &nbsp; M — Radio &nbsp; 🧲 grab magnets &nbsp; 💍 fly through rings<br/>
     📦 grab item boxes &nbsp; 1/2/3 — select item &nbsp; Q — use item<br/>
     🕷 Gripper: drive into a building wall to climb it (W up, S down)<br/>
@@ -571,8 +571,12 @@ const CAR_TYPES = {
              f1:true, desc:'Fastest car alive · Insane grip' },
   monster: { name:'🚙 Monster Truck', topSpeed:55, accel:30, handling:1.8, brake:34, mass:3.0, color:0x7722cc,
              monster:true, desc:'Crushes traffic · Mega jump' },
+  bolt:    { name:'⚡ Bolt',       topSpeed:94, accel:56, handling:3.1, brake:52, mass:0.85, color:0x00e0ff,
+             blink:true, desc:'Electric hypercar · Blink-dash (tap Nitro)' },
+  hopper:  { name:'🦘 Hopper',     topSpeed:60, accel:32, handling:2.1, brake:34, mass:1.1, color:0x66dd44,
+             hopper:true, desc:'Bounces sky-high on every landing' },
 };
-const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane','tank','gripper','bus','f1','monster'];
+const CAR_ORDER = ['sports','muscle','suv','pickup','super','sedan','plane','tank','gripper','bus','f1','monster','bolt','hopper'];
 const COLOR_OPTIONS = [0xff3344,0xff8c1a,0xf1c40f,0x2ecc71,0x1abc9c,0x3498db,0x9b59b6,0xe84393,0xecf0f1,0x2c3e50];
 
 /* =====================================================================
@@ -646,6 +650,8 @@ function buildCarMesh(type, colorHex) {
     pickup:{ w:2.1, h:1.0, l:5.0, cabin:0.8,  ride:0.65, wheel:0.5  },
     super: { w:2.0, h:0.6, l:4.4, cabin:0.45, ride:0.35, wheel:0.42 },
     sedan: { w:1.9, h:0.85,l:4.4, cabin:0.7,  ride:0.5,  wheel:0.44 },
+    bolt:  { w:1.95,h:0.55,l:4.3, cabin:0.42, ride:0.32, wheel:0.4  },
+    hopper:{ w:1.9, h:0.9, l:3.6, cabin:0.7,  ride:0.95, wheel:0.6  },
   }[type] || P_default();
   function P_default(){ return { w:1.9, h:0.8, l:4.3, cabin:0.6, ride:0.5, wheel:0.44 }; }
 
@@ -725,6 +731,26 @@ function buildCarMesh(type, colorHex) {
   group.add(target); spot.target = target;
   group.add(spot);
   group.userData.headlight = spot;
+
+  // ⚡ Bolt: glowing energy strips down the flanks + roof
+  if (type === 'bolt') {
+    const glowMat = new THREE.MeshStandardMaterial({ color:0x00e0ff, emissive:0x00e0ff, emissiveIntensity:1.4, metalness:0.4, roughness:0.2 });
+    for (const sx of [-1, 1]) {
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.14, P.l*0.8), glowMat);
+      strip.position.set(sx*P.w/2, P.ride + P.h*0.5, 0); group.add(strip);
+    }
+    const roofBar = new THREE.Mesh(new THREE.BoxGeometry(P.w*0.5, 0.06, 0.5), glowMat);
+    roofBar.position.set(0, P.ride + P.h + P.cabin, -P.l*0.05); group.add(roofBar);
+    group.userData.boltGlow = glowMat;
+  }
+  // 🦘 Hopper: fat springy wheels + a coiled-spring look under the chassis
+  if (type === 'hopper') {
+    const springMat = new THREE.MeshStandardMaterial({ color:0xdddddd, metalness:0.85, roughness:0.3 });
+    for (const [sx, sz] of [[-1,-1],[1,-1],[-1,1],[1,1]]) {
+      const coil = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, P.ride, 6), springMat);
+      coil.position.set(sx*(P.w/2-0.2), P.ride/2, sz*(P.l/2-1.0)); group.add(coil);
+    }
+  }
 
   group.userData.proportions = P;
   return group;
@@ -1165,6 +1191,8 @@ const itemBoxes = [];                                    // mystery boxes [{x,z,
 const itemProjectiles = [];                              // live shells/bombs [{mesh,x,y,z,vx,vz,kind,life,...}]
 const oilSlicks = [];                                    // dropped hazards [{x,z,mesh,life}]
 let auraMesh = null, auraKind = null;                    // star/shield/ghost glow attached to car
+let gravTarget = null;                                   // { kind:'player'|'npc', id } I'm holding
+let gravBeam = null, gravHoldT = 0, gravMoveT = 0;       // gravity-gun beam + hold timer
 
 const _crushCd = new Map();              // monster-truck crush rate limiter
 let beachBall = null;
@@ -1175,6 +1203,7 @@ const speedTraps = [];                   // speed cameras [{x,z,flash,cooldown,g
 
 // audio
 let audioCtx = null, engineOsc = null, engineGain = null;
+let engineOsc2 = null, engineFilter = null, screechGain = null, screechSrc = null;
 
 let pingMs = 0, lastPingSent = 0;
 
@@ -1304,6 +1333,7 @@ function buildWorld(seed) {
   for (const p of itemProjectiles) scene.remove(p.mesh); itemProjectiles.length = 0;
   for (const o of oilSlicks) { scene.remove(o.mesh); o.mesh.geometry.dispose(); o.mesh.material.dispose(); } oilSlicks.length = 0;
   itemBoxes.length = 0;
+  gravTarget = null; player._grabbed = false; if (gravBeam) gravBeam.visible = false;
   if (typeof clearPolice === 'function') clearPolice();
   mapRng = makeRng(((seed == null ? 1 : seed) | 0) >>> 0);
   const R = mapRng;
@@ -2504,6 +2534,7 @@ const ITEM_DEFS = [
   { id:'oil',      emoji:'🛢️', name:'Oil Slick',      desc:'Drops a spin-out trap behind you' },
   { id:'ghost',    emoji:'👻', name:'Ghost',          desc:'Phase through danger (5s)' },
   { id:'freeze',   emoji:'❄️', name:'Freeze Blast',   desc:'Freezes nearby cops & traffic' },
+  { id:'gravgun',  emoji:'✊', name:'Gravity Gun',    desc:'Grab a rival, hold them, then Fire to throw' },
 ];
 const ITEM_BY_ID = {}; for (const d of ITEM_DEFS) ITEM_BY_ID[d.id] = d;
 
@@ -2598,6 +2629,7 @@ function applyItem(id) {
     case 'oil':       dropOil(); break;
     case 'ghost':     startGhost(5); break;
     case 'freeze':    freezeBlast(); break;
+    case 'gravgun':   gravGunGrab(); break;
   }
 }
 
@@ -2768,12 +2800,96 @@ function freezeBlast() {
 }
 function _iceBurst(x, z) { emitShockwave(x, 0.1, z, 7); for (let i = 0; i < 4; i++) emitSmoke(x + (Math.random()-0.5)*2, 1 + Math.random()*2, z + (Math.random()-0.5)*2); }
 
+/* ---- GRAVITY GUN: grab a rival, float them overhead, then Fire to throw ----
+   Online it targets other players (server relays the hold); offline it grabs
+   the nearest NPC car. */
+function gravGunGrab() {
+  if (gravTarget) return;                                  // already holding someone
+  const ox = player.pos.x, oz = player.pos.z;
+  const dirx = Math.sin(player.heading), dirz = Math.cos(player.heading);
+  let bestId = null, bestD = 4900, kind = null;            // 70m range
+  const onlinePvp = !offlineMode && connected;
+  const pool = onlinePvp ? remotePlayers : npcCars;
+  for (const [id, e] of pool) {
+    const t = e.target; if (!t) continue;
+    const vx = t.x - ox, vz = t.z - oz, d2 = vx*vx + vz*vz;
+    if (d2 < bestD && (vx*dirx + vz*dirz) > -8) { bestD = d2; bestId = id; }
+  }
+  if (!bestId) { showStuntMsg('✊ ...nothing in range'); return; }
+  kind = onlinePvp ? 'player' : 'npc';
+  gravTarget = { kind, id: bestId };
+  gravHoldT = 9; gravMoveT = 0;
+  ensureGravBeam();
+  if (kind === 'player') socket.emit('gravGrab', { targetId: bestId });
+  else if (offlineMode) offlineSim.hold(bestId, ox, player.pos.y + 5, oz);
+  itemSound(200, 620);
+  showStuntMsg('✊ GRABBED! Press Fire to throw');
+}
+function ensureGravBeam() {
+  if (gravBeam) { gravBeam.visible = true; return; }
+  gravBeam = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1, 8),
+    new THREE.MeshBasicMaterial({ color:0xaa66ff, transparent:true, opacity:0.5, blending:THREE.AdditiveBlending, depthWrite:false }));
+  scene.add(gravBeam);
+}
+function gravHoldPos() {
+  return { x: player.pos.x + Math.sin(player.heading)*1.5, y: player.pos.y + 5.0, z: player.pos.z + Math.cos(player.heading)*1.5 };
+}
+function updateGravGun(dt) {
+  if (!gravTarget) { if (gravBeam) gravBeam.visible = false; return; }
+  const hp = gravHoldPos();
+  let tx = hp.x, ty = hp.y, tz = hp.z, alive = true;
+  if (gravTarget.kind === 'player') {
+    const r = remotePlayers.get(gravTarget.id);
+    if (!r || !r.target) alive = false;
+    else {
+      gravMoveT -= dt;
+      if (gravMoveT <= 0) { gravMoveT = 1/25; if (connected) socket.emit('gravMove', { targetId: gravTarget.id, x:hp.x, y:hp.y, z:hp.z }); }
+      tx = r.mesh.position.x; ty = r.mesh.position.y + 1; tz = r.mesh.position.z;
+    }
+  } else {
+    if (!npcCars.get(gravTarget.id)) alive = false;
+    else if (offlineMode) { offlineSim.hold(gravTarget.id, hp.x, hp.y, hp.z); }
+  }
+  if (!alive) { gravRelease(); return; }
+  drawGravBeam(player.pos.x, player.pos.y + 1.4, player.pos.z, tx, ty, tz);
+  gravHoldT -= dt;
+  if (gravHoldT <= 0) gravGunThrow();                      // auto-throw when time's up
+}
+const _gvUp = new THREE.Vector3(0,1,0), _gvDir = new THREE.Vector3();
+function drawGravBeam(x1,y1,z1, x2,y2,z2) {
+  ensureGravBeam();
+  gravBeam.visible = true;
+  const dx=x2-x1, dy=y2-y1, dz=z2-z1, len = Math.hypot(dx,dy,dz) || 0.001;
+  gravBeam.position.set((x1+x2)/2, (y1+y2)/2, (z1+z2)/2);
+  gravBeam.scale.set(1, len, 1);
+  _gvDir.set(dx/len, dy/len, dz/len);
+  gravBeam.quaternion.setFromUnitVectors(_gvUp, _gvDir);
+  gravBeam.material.opacity = 0.4 + Math.abs(Math.sin(clock.elapsedTime*10))*0.25;
+}
+function gravGunThrow() {
+  if (!gravTarget) return;
+  const vx = Math.sin(player.heading)*95, vz = Math.cos(player.heading)*95, vy = 24;
+  if (gravTarget.kind === 'player') { if (connected) socket.emit('gravThrow', { targetId: gravTarget.id, vx, vy, vz }); }
+  else if (offlineMode) offlineSim.throwNpc(gravTarget.id, vx, vz, vy);
+  const hp = gravHoldPos();
+  for (let i=0;i<8;i++) emitFire(hp.x+(Math.random()-0.5)*2, hp.y, hp.z+(Math.random()-0.5)*2, 6, 0.5);
+  itemSound(620, 120);
+  showStuntMsg('✊ THROWN! 💥');
+  gravRelease();
+}
+function gravRelease() {
+  if (gravTarget && gravTarget.kind === 'npc' && offlineMode) offlineSim.release(gravTarget.id);
+  gravTarget = null;
+  if (gravBeam) gravBeam.visible = false;
+}
+
 /* ---- per-frame driver + HUD ---- */
 function updateItems(dt) {
   updateItemBoxes(dt);
   updateItemProjectiles(dt);
   updateOilSlicks(dt);
   updateItemEffects(dt);
+  updateGravGun(dt);
 }
 function renderInventory() {
   for (let i = 0; i < 3; i++) {
@@ -2791,6 +2907,7 @@ function renderInventory() {
 function resetInventory() {
   inventory[0] = inventory[1] = inventory[2] = null; invSelected = 0;
   player._starT = player._shieldT = player._ghostT = 0;
+  gravRelease(); player._grabbed = false;
   removeAura(); renderInventory();
 }
 
@@ -2913,7 +3030,7 @@ function startLaunch(id, x, z, t0Ms) {
   activeLaunches.set(id, launch);
   if (id === selfId) {
     myLaunch = launch;
-    showFlipMsg('🚀 LAUNCH SEQUENCE INITIATED');
+    showFlipMsg('🚀 LAUNCH! Steer with your controls to fly it');
     rocketIgnitionSound();
     // freeze car velocity at launch
     player.vel.set(0, 0);
@@ -2958,27 +3075,37 @@ function updateRocketLaunches(dt) {
   for (const [id, L] of activeLaunches) {
     const u = rocketProgress(L, now);
     const y = rocketAltitudeAt(u);
-    // belching flames + smoke at the rocket's base (visible from anywhere)
-    for (let i=0;i<3;i++) {
-      emitFire(L.x + (Math.random()-0.5)*2, Math.max(0, y - 4), L.z + (Math.random()-0.5)*2, 6, 0.9);
-    }
-    emitSmoke(L.x + (Math.random()-0.5)*5, Math.max(0, y - 5), L.z + (Math.random()-0.5)*5);
-    emitSmoke(L.x + (Math.random()-0.5)*5, 0.5, L.z + (Math.random()-0.5)*5);
 
     if (id === selfId) {
-      // override physics — pin to pad XZ, ride the rocket up
-      player.pos.x = L.x; player.pos.z = L.z;
-      player.pos.y = y;
-      player.vel.set(0, 0);
-      player._vy = 0;
+      // ---- YOU CAN FLY THE ROCKET ---- steer it around the sky while it climbs.
+      // (Local-only: remotes still see it rise straight up from the pad.)
+      const ax = input.steerAxis != null ? -input.steerAxis : ((input.right?1:0) - (input.left?1:0)); // + = right
+      const az = (input.throttle?1:0) - (input.brake?1:0);                                             // + = forward
+      const SP = 78;
+      L.ovx = (L.ovx||0) + ( ax*SP - (L.ovx||0)) * Math.min(1, dt*2.5);
+      L.ovz = (L.ovz||0) + (-az*SP - (L.ovz||0)) * Math.min(1, dt*2.5);   // forward = -z
+      L.ox = (L.ox||0) + L.ovx*dt;
+      L.oz = (L.oz||0) + L.ovz*dt;
+      const lim = WORLD.half + 40;
+      L.ox = Math.max(-lim - L.x, Math.min(lim - L.x, L.ox));
+      L.oz = Math.max(-lim - L.z, Math.min(lim - L.z, L.oz));
+      player.pos.x = L.x + L.ox; player.pos.z = L.z + L.oz; player.pos.y = y;
+      player.vel.set(0, 0); player._vy = 0;
       player.speed = u * 200;            // speedo climbs as we accelerate
       player.invuln = 2;
-      // gentle spin during ascent for flair
-      player.tumbleRoll += dt * 0.5;
+      // bank toward the direction of travel for a flying feel
+      player.tumbleRoll  += ( L.ovx*0.004 - player.tumbleRoll)  * Math.min(1, dt*4);
+      player.tumblePitch += (-L.ovz*0.004 - player.tumblePitch) * Math.min(1, dt*4);
     }
+    // belching flames + smoke at the (possibly steered) rocket base
+    const fx = L.x + (L.ox||0), fz = L.z + (L.oz||0);
+    for (let i=0;i<3;i++) emitFire(fx + (Math.random()-0.5)*2, Math.max(0, y - 4), fz + (Math.random()-0.5)*2, 6, 0.9);
+    emitSmoke(fx + (Math.random()-0.5)*5, Math.max(0, y - 5), fz + (Math.random()-0.5)*5);
+    emitSmoke(fx + (Math.random()-0.5)*5, 0.5, fz + (Math.random()-0.5)*5);
+
     if (u >= 1) { endLaunch(id); }
   }
-  // animate each rocket mesh — lift it up if a launch is using that pad
+  // animate each rocket mesh — lift it up (and follow steering) if launching
   for (const rs of rocketShips) {
     let activeLocal = null;
     for (const L of activeLaunches.values()) {
@@ -2987,8 +3114,12 @@ function updateRocketLaunches(dt) {
     if (activeLocal) {
       const u = rocketProgress(activeLocal, now);
       rs.rocket.position.y = rocketAltitudeAt(u) - 8;
+      rs.rocket.position.x = rs.basePos.x + (activeLocal.ox||0);
+      rs.rocket.position.z = rs.basePos.z + (activeLocal.oz||0);
     } else {
       rs.rocket.position.y += (0 - rs.rocket.position.y) * Math.min(1, dt*2);
+      rs.rocket.position.x = rs.basePos.x;
+      rs.rocket.position.z = rs.basePos.z;
     }
   }
 }
@@ -3388,23 +3519,54 @@ function initAudio() {
   if (audioCtx) return;
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    engineOsc = audioCtx.createOscillator();
-    engineOsc.type = 'sawtooth';
-    engineGain = audioCtx.createGain();
-    engineGain.gain.value = 0.0;
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'lowpass'; filter.frequency.value = 800;
-    engineOsc.connect(filter); filter.connect(engineGain); engineGain.connect(audioCtx.destination);
-    engineOsc.frequency.value = 60;
-    engineOsc.start();
+    // ENGINE: a detuned sawtooth (body) + a square an octave down (growl),
+    // both through a lowpass whose cutoff opens up with revs.
+    engineGain = audioCtx.createGain(); engineGain.gain.value = 0.0;
+    engineFilter = audioCtx.createBiquadFilter();
+    engineFilter.type = 'lowpass'; engineFilter.frequency.value = 700;
+    engineOsc = audioCtx.createOscillator(); engineOsc.type = 'sawtooth'; engineOsc.frequency.value = 60;
+    engineOsc2 = audioCtx.createOscillator(); engineOsc2.type = 'square'; engineOsc2.frequency.value = 30; engineOsc2.detune.value = -8;
+    const growl = audioCtx.createGain(); growl.gain.value = 0.45;
+    engineOsc.connect(engineFilter); engineOsc2.connect(growl); growl.connect(engineFilter);
+    engineFilter.connect(engineGain); engineGain.connect(audioCtx.destination);
+    engineOsc.start(); engineOsc2.start();
+    // TYRE SCREECH: looped filtered noise, gated open while drifting.
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
+    const nd = buf.getChannelData(0); for (let i=0;i<nd.length;i++) nd[i] = Math.random()*2-1;
+    screechSrc = audioCtx.createBufferSource(); screechSrc.buffer = buf; screechSrc.loop = true;
+    const sf = audioCtx.createBiquadFilter(); sf.type = 'bandpass'; sf.frequency.value = 1500; sf.Q.value = 4;
+    screechGain = audioCtx.createGain(); screechGain.gain.value = 0;
+    screechSrc.connect(sf); sf.connect(screechGain); screechGain.connect(audioCtx.destination);
+    screechSrc.start();
   } catch(e){ console.warn('Audio init failed', e); }
 }
 function updateEngineSound() {
-  if (!engineOsc || !audioCtx) return;
-  const rpm = Math.abs(player.speed) / (CAR_TYPES[player.carType].topSpeed) ; // 0..1
-  const base = 50 + input.throttle*30;
-  engineOsc.frequency.setTargetAtTime(base + rpm*220 + (input.nitro?60:0), audioCtx.currentTime, 0.05);
-  engineGain.gain.setTargetAtTime(gameStarted ? (0.04 + rpm*0.08) : 0, audioCtx.currentTime, 0.1);
+  if (!engineOsc || !engineOsc2 || !screechGain || !audioCtx) return;
+  const def = CAR_TYPES[player.carType] || CAR_TYPES.sports;
+  const rpm = Math.min(1.2, Math.abs(player.speed) / (def.topSpeed || 70));   // 0..~1.2
+  // engine character: heavy rigs rumble low & fat, sportscars scream high & bright
+  const heavy  = def.bus || def.tank || def.monster || def.pickup || def.suv;
+  const sporty = def.f1 || def.super || def.blink || def.sports;
+  const basePitch = heavy ? 34 : sporty ? 58 : 46;
+  const boosting = (input.nitro && player.nitro>0) || player.boostTimer>0;
+  const rev = basePitch + rpm*(sporty?300:heavy?150:220) + input.throttle*26 + (boosting?70:0);
+  const t = audioCtx.currentTime;
+  engineOsc.frequency.setTargetAtTime(rev, t, 0.04);
+  engineOsc2.frequency.setTargetAtTime(rev*0.5, t, 0.05);
+  engineFilter.frequency.setTargetAtTime(480 + rpm*2200 + input.throttle*400 + (boosting?600:0), t, 0.06);
+  engineGain.gain.setTargetAtTime(gameStarted ? (0.05 + rpm*0.10 + input.throttle*0.02) : 0, t, 0.1);
+  // tyre screech on handbrake / drift at speed
+  const drifting = gameStarted && !player.airborne && (input.handbrake || (player._driftT||0) > 0.05) && Math.abs(player.speed) > 6;
+  screechGain.gain.setTargetAtTime(drifting ? 0.05 + Math.min(0.09, Math.abs(player.speed)/180) : 0, t, drifting ? 0.02 : 0.15);
+}
+function blinkSound() {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = 'sawtooth'; o.frequency.value = 1300; g.gain.value = 0.09;
+  o.connect(g); g.connect(audioCtx.destination); o.start();
+  o.frequency.setTargetAtTime(180, audioCtx.currentTime, 0.05);
+  g.gain.setTargetAtTime(0, audioCtx.currentTime + 0.08, 0.05);
+  o.stop(audioCtx.currentTime + 0.26);
 }
 function playHorn() {
   if (!audioCtx) return;
@@ -3422,6 +3584,14 @@ function updatePhysics(dt) {
   // while we're riding the rocket, updateRocketLaunches owns our position —
   // skip normal physics so collisions/gravity don't fight it.
   if (myLaunch) return;
+  // being gravity-gunned by another player — our position comes from their
+  // 'grabbedMove' relays. Watchdog releases us if the grabber goes silent.
+  if (player._grabbed) {
+    player._grabT = (player._grabT || 0) + dt;
+    if (player._grabT > 1.6) { player._grabbed = false; hideFlipMsg(); }
+    player.speed = 0;
+    return;
+  }
   const def = effectiveStats();
   if (def.fly) { updatePlanePhysics(dt, def); return; }
   // gripper cars climb building walls. handled BEFORE normal AABB collision so
@@ -3435,6 +3605,7 @@ function updatePhysics(dt) {
   // controls are locked while flipped, paused, in garage, trapped, or pre-race
   if (player.invuln > 0) player.invuln -= dt;
   if (_jumpCooldown > 0) _jumpCooldown -= dt;
+  if (player._blinkCd > 0) player._blinkCd -= dt;
   const locked = player.flipped || paused || garageOpen || player.trapped || racePreStart();
   if (player.trapped) { player.vel.set(0,0); player.speed = 0; player._vy = 0; }
   const thr = locked ? 0 : input.throttle;
@@ -3546,7 +3717,9 @@ function updatePhysics(dt) {
   } else {
     if (player._vy < -2) player.suspension = Math.min(1, -player._vy/18); // landing thud
     player.pos.y = groundY;
-    if (player._vy < 0) player._vy = 0;
+    // 🦘 Hopper auto-bounces off every landing (keeps ~62% of impact speed)
+    if (def.hopper && player._vy < -8) { player._vy = Math.min(30, -player._vy * 0.62); bounceSound(); }
+    else if (player._vy < 0) player._vy = 0;
     resolveLanding(dt);
   }
   player.suspension *= (1 - dt*4);
@@ -3970,11 +4143,33 @@ function tryJump() {
   const def = CAR_TYPES[player.carType] || {};
   if (def.fly) return;                                     // planes don't jump
   // small upward kick; heavier cars (tank, bus) hop less, monster trucks LEAP
-  const power = def.monster ? 19 : def.bus ? 10 : def.tank ? 9 : 14;
+  const power = def.hopper ? 24 : def.monster ? 19 : def.bus ? 10 : def.tank ? 9 : 14;
   player._vy = Math.max(player._vy, power);
   _jumpCooldown = 0.35;                                    // brief lockout
   // little dust puff
   for (let i=0;i<4;i++) emitSmoke(player.pos.x + (Math.random()-0.5)*2, 0.4, player.pos.z + (Math.random()-0.5)*2);
+}
+
+// Car special ability — triggered by tapping Nitro. Currently the ⚡ Bolt's blink-dash.
+function tryAbility() {
+  if (!gameStarted || paused || garageOpen) return;
+  if (player.carType === 'bolt') doBlink();
+}
+function doBlink() {
+  if ((player._blinkCd || 0) > 0 || player.flipped || player.trapped || player._grabbed || player.airborne) return;
+  player._blinkCd = 1.1;
+  const nx = Math.sin(player.heading), nz = Math.cos(player.heading), dist = 18;
+  blinkFlash(player.pos.x, player.pos.y + 0.6, player.pos.z);
+  player.pos.x += nx * dist; player.pos.z += nz * dist;
+  player.vel.x += nx * 34; player.vel.y += nz * 34;
+  player.invuln = Math.max(player.invuln, 0.5);
+  blinkFlash(player.pos.x, player.pos.y + 0.6, player.pos.z);
+  showStuntMsg('⚡ BLINK!');
+  blinkSound();
+}
+function blinkFlash(x, y, z) {
+  emitShockwave(x, 0.1, z, 6);
+  for (let i = 0; i < 8; i++) emitFire(x + (Math.random()-0.5)*2, y + Math.random()*1.6, z + (Math.random()-0.5)*2, 6, 0.5);
 }
 
 function respawn() {
@@ -4404,6 +4599,7 @@ function setupInput() {
     if (e.code==='KeyM' && gameStarted) { toggleRadio(); }
     if (gameStarted && (e.code==='Digit1'||e.code==='Digit2'||e.code==='Digit3')) { selectSlot(+e.code.slice(-1)-1); }
     if (e.code==='KeyQ' && gameStarted) { useSelectedItem(); }
+    if ((e.code==='ShiftLeft'||e.code==='ShiftRight') && gameStarted && !e.repeat) { tryAbility(); }
     if (e.code==='Enter' && gameStarted) { openChat(); }
     if (e.code==='Escape' && gameStarted) { if (garageOpen) closeGarage(); else togglePause(); }
     // JUMP — Space tap (also handbrakes; that's intentional). Only on
@@ -4550,7 +4746,7 @@ function setupTouchControls() {
     el.addEventListener('pointerup', rel); el.addEventListener('pointercancel', rel); el.addEventListener('pointerleave', rel);
   };
 
-  hold('tcNitro', ()=>{ input.nitro = true; }, ()=>{ input.nitro = false; });
+  hold('tcNitro', ()=>{ input.nitro = true; tryAbility(); }, ()=>{ input.nitro = false; });
   hold('tcJump',  ()=>{ input.handbrake = true; if (gameStarted && !myLaunch) tryJump(); }, ()=>{ input.handbrake = false; });
   hold('tcHorn',  ()=>{ if (gameStarted){ input.horn = true; playHorn(); } }, ()=>{ input.horn = false; });
   tap('tcFire',    ()=>{ if (gameStarted) fire(); });
@@ -4751,6 +4947,23 @@ function connect() {
     if (d.killerId === selfId) { addCoins(150); saveAccount(); updateCoinsUI(); player.kills++; }
   });
 
+  // ---- gravity gun: I'm the one being grabbed / moved / thrown ----
+  socket.on('grabbed', (d) => {
+    if (!gameStarted || !d) return;
+    player._grabbed = true; player._grabbedBy = d.by; player._grabT = 0;
+    showFlipMsg('✊ GRABBED by ' + escapeHtml(d.byName || 'someone') + '!');
+  });
+  socket.on('grabbedMove', (d) => {
+    if (!player._grabbed || !d) return;
+    player.pos.set(d.x, d.y, d.z); player.vel.set(0, 0); player._vy = 0; player._grabT = 0;
+  });
+  socket.on('thrown', (d) => {
+    player._grabbed = false; player._grabbedBy = null;
+    if (d) { player.vel.x += d.vx || 0; player.vel.y += d.vz || 0; player._vy = d.vy || 0; }
+    player.invuln = Math.max(player.invuln, 0.6);
+    hideFlipMsg();
+  });
+
   // ping measurement via RTT echo
   setInterval(()=>{
     if (!connected) return;
@@ -4873,6 +5086,13 @@ const offlineSim = {
     const npcs = this.npcs;
     for (let i=0;i<npcs.length;i++){
       const n = npcs[i];
+      // held by the gravity gun — pin it to the hold point and skip its AI
+      if (n.held) {
+        n.x = n.hx; n.z = n.hz; n.y = n.hy;
+        ensureNpc({ id:n.id, c:n.color });
+        npcCars.get(n.id).target = { x:n.x, z:n.z, y:n.y, h:n.heading, r:0, p:0, s:0 };
+        continue;
+      }
       const path = this.paths[n.path];
       const target = path[(n.seg+1)%path.length];
       let slow = false;
@@ -4923,6 +5143,9 @@ const offlineSim = {
     }
   },
 
+  hold(id, x, y, z) { const n = this.npcs.find(o => o.id === id); if (n) { n.held = true; n.hx = x; n.hy = y; n.hz = z; } },
+  release(id) { const n = this.npcs.find(o => o.id === id); if (n) n.held = false; },
+  throwNpc(id, vx, vz, vy) { const n = this.npcs.find(o => o.id === id); if (!n) return; n.held = false; this.knock(id, vx, vz, vy, true, 30); },
   knock(id, vx, vz, vy, isShot, dmg) {
     const n = this.npcs.find(o => o.id === id);
     if (!n) return;
@@ -5221,6 +5444,8 @@ let beingControlled = false, controlInputData = null, lastControlMs = 0;
    COMBAT — turret firing, damage, explosions, kill feed
    ===================================================================== */
 function fire() {
+  // holding someone with the gravity gun? Fire throws them instead of shooting.
+  if (gravTarget) { gravGunThrow(); return; }
   // tanks always have their cannon — other cars need the bought turret
   const isTank = CAR_TYPES[player.carType] && CAR_TYPES[player.carType].autoTurret;
   if (!isTank && !account.turret) return;

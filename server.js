@@ -1104,6 +1104,37 @@ io.on('connection', (socket) => {
     if (lobby.players.has(d.targetId)) io.to(d.targetId).emit('controlled', d.input || {});
   });
 
+  // ---- Gravity gun: grab a rival, hold them above you, then throw them ----
+  socket.on('gravGrab', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || !d || !d.targetId || d.targetId === socket.id) return;
+    const target = lobby.players.get(d.targetId);
+    if (!target || target.heldBy) return;              // can't steal an already-held player
+    target.heldBy = socket.id;
+    const me = lobby.players.get(socket.id);
+    io.to(d.targetId).emit('grabbed', { by: socket.id, byName: me ? me.name : '?' });
+  });
+  socket.on('gravMove', (d) => {
+    if (!rateOk(socket, 'gravmove', 40, 1000)) return; // ~ input rate
+    const lobby = currentLobby();
+    if (!lobby || !d || !d.targetId) return;
+    const target = lobby.players.get(d.targetId);
+    if (!target || target.heldBy !== socket.id) return;
+    io.to(d.targetId).emit('grabbedMove', {
+      x: clampNum(d.x, -3000, 3000), y: clampNum(d.y, -50, 600), z: clampNum(d.z, -3000, 3000),
+    });
+  });
+  socket.on('gravThrow', (d) => {
+    const lobby = currentLobby();
+    if (!lobby || !d || !d.targetId) return;
+    const target = lobby.players.get(d.targetId);
+    if (!target || target.heldBy !== socket.id) return;
+    target.heldBy = null;
+    io.to(d.targetId).emit('thrown', {
+      vx: clampNum(d.vx, -200, 200), vy: clampNum(d.vy, -50, 120), vz: clampNum(d.vz, -200, 200),
+    });
+  });
+
   // ---- Leave lobby (back to menu) --------------------------------------
   socket.on('leaveLobby', () => {
     handleLeave(socket);
@@ -1127,6 +1158,10 @@ function handleLeave(socket) {
 
   const player = lobby.players.get(socket.id);
   lobby.players.delete(socket.id);
+  // if this player was gravity-gunning anyone, free them
+  for (const other of lobby.players.values()) {
+    if (other.heldBy === socket.id) { other.heldBy = null; io.to(other.id).emit('thrown', { vx: 0, vy: 8, vz: 0 }); }
+  }
   io.to(lobbyId).emit('playerLeft', { id: socket.id, name: player ? player.name : '' });
 
   if (lobby.players.size === 0) {
@@ -1226,6 +1261,7 @@ function makePlayer(id, name, data) {
     ready: false,
     isHost: false,
     state: null,
+    heldBy: null,          // socket id of a player gravity-gunning this one
   };
 }
 
