@@ -168,21 +168,21 @@
     backdrop-filter:blur(3px); box-shadow:0 3px 10px rgba(0,0,0,0.35); transition:transform .06s, background .1s; }
   #touchControls .tc-btn { border-radius:50%; }
   #touchControls .pressed { background:rgba(255,123,0,0.55); border-color:#ffb066; transform:scale(0.92); }
-  /* steering — bottom-left */
-  #tcSteer { position:absolute; left:max(18px, env(safe-area-inset-left)); bottom:calc(24px + env(safe-area-inset-bottom)); display:flex; gap:14px; }
-  .tc-steer { width:76px; height:76px; font-size:32px; }
-  /* pedals — bottom-right */
-  #tcPedals { position:absolute; right:max(18px, env(safe-area-inset-right)); bottom:calc(24px + env(safe-area-inset-bottom)); display:flex; align-items:flex-end; gap:12px; }
-  .tc-gas   { width:96px; height:96px; font-size:38px; background:rgba(24,120,60,0.5); border-color:rgba(90,230,150,0.5); }
-  .tc-brake { width:76px; height:76px; font-size:30px; background:rgba(150,40,40,0.5); border-color:rgba(255,130,130,0.5); }
-  .tc-jump  { width:62px; height:62px; font-size:26px; margin-bottom:10px; }
-  /* action cluster — mid-right */
-  #tcActions { position:absolute; right:max(14px, env(safe-area-inset-right)); bottom:150px;
-    display:flex; flex-direction:column-reverse; align-items:center; gap:12px; }
-  .tc-act { width:62px; height:62px; font-size:26px; }
-  .tc-act.tc-sm { width:50px; height:50px; font-size:20px; }
+  /* drive joystick — whole left half is the touch zone; stick spawns under the finger */
+  #tcJoyZone { position:fixed; left:0; top:0; width:50%; height:100%; z-index:1; touch-action:none; }
+  #tcJoyBase, #tcJoyThumb { position:fixed; display:none; border-radius:50%; pointer-events:none;
+    transform:translate(-50%,-50%); z-index:2; }
+  #tcJoyBase { width:150px; height:150px; background:rgba(12,18,32,0.32); border:2px solid rgba(120,150,200,0.4);
+    backdrop-filter:blur(2px); }
+  #tcJoyThumb { width:72px; height:72px; background:rgba(255,123,0,0.5); border:2px solid #ffb066;
+    box-shadow:0 2px 14px rgba(0,0,0,0.45); }
+  /* action cluster — bottom-right */
+  #tcActions { position:absolute; z-index:3; right:max(14px, env(safe-area-inset-right)); bottom:calc(24px + env(safe-area-inset-bottom));
+    display:grid; grid-template-columns:repeat(3, auto); gap:12px; justify-items:center; align-items:center; }
+  .tc-act { width:64px; height:64px; font-size:26px; }
+  .tc-act.tc-sm { width:52px; height:52px; font-size:21px; }
   /* top utility buttons */
-  #tcTop { position:absolute; top:calc(10px + env(safe-area-inset-top)); right:max(14px, env(safe-area-inset-right)); display:flex; gap:10px; }
+  #tcTop { position:absolute; z-index:3; top:calc(10px + env(safe-area-inset-top)); right:max(14px, env(safe-area-inset-right)); display:flex; gap:10px; }
   .tc-mini { width:44px; height:44px; border-radius:12px; font-size:20px; }
   /* only show touch UI on touch devices; hide the keyboard hint there */
   body:not(.touch) #touchControls { display:none !important; }
@@ -225,7 +225,7 @@
     background:#0a0e17cc; padding:6px 12px; border-radius:8px; border:1px solid #2a6cc4; display:none; max-width:280px; }
 
   /* ---------- item inventory (Mario-Kart style) ---------- */
-  #invBar { position:absolute; bottom:24px; left:50%; transform:translateX(-50%); display:flex; gap:10px; z-index:11; }
+  #invBar { position:absolute; bottom:24px; left:50%; transform:translateX(-50%); display:flex; gap:10px; z-index:16; }
   .inv-slot { position:relative; width:62px; height:62px; border-radius:14px; background:#0a0e17cc;
     border:2px solid #2a3a5a; display:flex; align-items:center; justify-content:center; font-size:34px;
     transition:border-color .15s, box-shadow .15s, transform .15s; }
@@ -435,29 +435,23 @@
 
   <!-- =================== ON-SCREEN TOUCH CONTROLS (mobile) =================== -->
   <div id="touchControls" class="hidden">
+    <!-- left half: dynamic drive joystick (appears under your thumb) -->
+    <div id="tcJoyZone"></div>
+    <div id="tcJoyBase"></div>
+    <div id="tcJoyThumb"></div>
     <!-- top-right utility buttons -->
     <div id="tcTop">
       <div class="tc-mini" id="tcPause">⏸</div>
       <div class="tc-mini" id="tcChat">💬</div>
     </div>
-    <!-- steering (bottom-left) -->
-    <div id="tcSteer">
-      <div class="tc-btn tc-steer" id="tcLeft">◀</div>
-      <div class="tc-btn tc-steer" id="tcRight">▶</div>
-    </div>
-    <!-- action cluster (mid-right) -->
+    <!-- action cluster (bottom-right) -->
     <div id="tcActions">
       <div class="tc-btn tc-act" id="tcNitro">⚡</div>
       <div class="tc-btn tc-act" id="tcFire">🎯</div>
-      <div class="tc-btn tc-act" id="tcUse">📦</div>
+      <div class="tc-btn tc-act" id="tcJump">✋</div>
+      <div class="tc-btn tc-act tc-sm" id="tcUse">📦</div>
       <div class="tc-btn tc-act tc-sm" id="tcHorn">📣</div>
       <div class="tc-btn tc-act tc-sm" id="tcRespawn">🔄</div>
-    </div>
-    <!-- pedals (bottom-right) -->
-    <div id="tcPedals">
-      <div class="tc-btn tc-brake" id="tcBrake">▼</div>
-      <div class="tc-btn tc-jump" id="tcJump">⤒</div>
-      <div class="tc-btn tc-gas" id="tcGas">▲</div>
     </div>
   </div>
 </div>
@@ -1100,9 +1094,13 @@ const player = {
   health:100, lastHitMs:0, fireCooldown:0, kills:0,
 };
 
-const input = { throttle:0, brake:0, left:false, right:false, handbrake:false, nitro:false, horn:false };
+const input = { throttle:0, brake:0, left:false, right:false, handbrake:false, nitro:false, horn:false, steerAxis:null };
 const keys = {};
 const IS_TOUCH = (('ontouchstart' in window) || (navigator.maxTouchPoints > 0));
+// "mobile" = an actual phone/tablet, NOT a touchscreen laptop — so the
+// on-screen driving controls only appear where they're actually needed.
+const IS_MOBILE = /Android|iPhone|iPad|iPod|Windows Phone|webOS|BlackBerry|Opera Mini|IEMobile/i.test(navigator.userAgent)
+  || (navigator.maxTouchPoints > 1 && matchMedia('(pointer: coarse)').matches && matchMedia('(hover: none)').matches);
 
 // remote players: id -> { mesh, target:{x,y,z,h,s,...}, last, nameTagEl }
 const remotePlayers = new Map();
@@ -1185,11 +1183,14 @@ let pingMs = 0, lastPingSent = 0;
    ===================================================================== */
 function initThree() {
   const canvas = document.getElementById('gameCanvas');
-  renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  // Perf: skip MSAA on mobile GPUs (expensive), ask for the discrete GPU.
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: !IS_MOBILE, powerPreference: 'high-performance' });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  // Cap the render resolution — high-DPI phones default to 3× which quadruples
+  // the pixels to shade. 1.5× on mobile / 2× desktop keeps it sharp but fast.
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, IS_MOBILE ? 1.5 : 2));
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = IS_MOBILE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   // film-style tone mapping — richer colors, no blown-out whites
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -1212,7 +1213,7 @@ function initThree() {
   sun = new THREE.DirectionalLight(0xfff2cc, 1.4);
   sun.position.set(80, 120, 40);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);             // halved → 4× fewer shadow-map pixels
+  sun.shadow.mapSize.set(IS_MOBILE ? 512 : 1024, IS_MOBILE ? 512 : 1024);   // smaller map on mobile
   sun.shadow.camera.near = 1; sun.shadow.camera.far = 400;
   const s = 120;                                  // tight frustum around player → sharper + cheaper
   sun.shadow.camera.left=-s; sun.shadow.camera.right=s;
@@ -1227,6 +1228,8 @@ function initThree() {
   buildWorld();
   buildParticlePools();
   buildUfo();
+
+  precompileScene();   // warm all shaders now so the first frames don't stutter
 
   window.addEventListener('resize', onResize);
   animate();
@@ -1278,6 +1281,13 @@ function makeRng(seed){
 }
 let worldGroup = null;     // holds all map meshes so we can rebuild per-seed
 let mapRng = Math.random;  // active seeded rng during map build
+
+// Pre-compile every material's shader + upload geometry once, up front, so the
+// first rendered frames don't hitch while WebGL lazily compiles/uploads them.
+// This is the main fix for the "laggy the first few seconds" boot stutter.
+function precompileScene() {
+  try { renderer.compile(scene, camera); renderer.render(scene, camera); } catch (e) {}
+}
 
 function buildWorld(seed) {
   // tear down previous map
@@ -3418,7 +3428,7 @@ function updatePhysics(dt) {
 
   // steering -> heading change (scaled by speed direction)
   const speedFactor = Math.min(1, Math.abs(speed)/12);
-  let steerInput = locked ? 0 : ((input.left?1:0) - (input.right?1:0));
+  let steerInput = locked ? 0 : (input.steerAxis != null ? input.steerAxis : ((input.left?1:0) - (input.right?1:0)));
   player.steer += (steerInput - player.steer) * Math.min(1, dt*8);
   const reverseSign = speed < -0.5 ? -1 : 1;
   const turn = player.steer * (def.handling * 0.5) * speedFactor * reverseSign;
@@ -4378,7 +4388,7 @@ function setupInput() {
   canvas.addEventListener('contextmenu', e=> e.preventDefault());
   canvas.addEventListener('mousedown', e=>{
     if (e.button===2){ cam.free=true; cam.dragging=true; cam.lastX=e.clientX; cam.lastY=e.clientY; }
-    if (e.button===0 && gameStarted && !IS_TOUCH){ fire(); }  // left-click to shoot (desktop only)
+    if (e.button===0 && gameStarted && !IS_MOBILE){ fire(); }  // left-click to shoot (desktop only)
   });
   window.addEventListener('mouseup', e=>{
     if (e.button===2){ cam.dragging=false; cam.free=false; } // snap back
@@ -4396,25 +4406,30 @@ function setupInput() {
     cam.targetDist = Math.max(5, Math.min(26, cam.targetDist + e.deltaY*0.01));
   }, { passive:false });
 
-  // one-finger drag on empty canvas = look around (touch). Two fingers = pinch zoom.
+  // Touch camera: drag to look, two fingers to pinch-zoom. On mobile only the
+  // RIGHT half is used for the camera (the left half is the drive joystick), so
+  // a joystick finger + a look finger don't get mistaken for a pinch.
   if (IS_TOUCH) {
     let camId = null, pinchStart = 0, pinchDist0 = 0;
+    const relevant = (e) => IS_MOBILE ? [...e.touches].filter(t => t.clientX > window.innerWidth * 0.5) : [...e.touches];
     canvas.addEventListener('touchstart', (e)=>{
-      if (e.touches.length === 2) {
-        pinchDist0 = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+      const ts = relevant(e);
+      if (ts.length >= 2) {
+        pinchDist0 = Math.hypot(ts[0].clientX-ts[1].clientX, ts[0].clientY-ts[1].clientY);
         pinchStart = cam.targetDist; camId = null;
-      } else if (e.touches.length === 1) {
-        const t = e.touches[0]; camId = t.identifier; cam.free = true; cam.dragging = true; cam.lastX = t.clientX; cam.lastY = t.clientY;
+      } else if (ts.length === 1) {
+        const t = ts[0]; camId = t.identifier; cam.free = true; cam.dragging = true; cam.lastX = t.clientX; cam.lastY = t.clientY;
       }
     }, { passive:true });
     canvas.addEventListener('touchmove', (e)=>{
-      if (e.touches.length === 2 && pinchDist0) {
-        const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+      const ts = relevant(e);
+      if (ts.length >= 2 && pinchDist0) {
+        const d = Math.hypot(ts[0].clientX-ts[1].clientX, ts[0].clientY-ts[1].clientY);
         cam.targetDist = Math.max(5, Math.min(26, pinchStart * (pinchDist0 / Math.max(1,d))));
         return;
       }
       if (cam.dragging) {
-        const t = [...e.touches].find(x=>x.identifier===camId) || e.touches[0];
+        const t = ts.find(x=>x.identifier===camId) || ts[0];
         if (!t) return;
         cam.freeYaw   -= (t.clientX - cam.lastX) * 0.005;
         cam.freePitch += (t.clientY - cam.lastY) * 0.005;
@@ -4434,54 +4449,81 @@ function setupInput() {
    TOUCH / MOBILE CONTROLS — on-screen pads that feed the same input path
    ===================================================================== */
 function setupTouchControls() {
-  if (!IS_TOUCH) return;
+  if (!IS_MOBILE) return;                 // phones/tablets only — not desktops
   document.body.classList.add('touch');
   const tc = document.getElementById('touchControls');
   if (!tc) return;
   tc.classList.remove('hidden');
 
-  // bind a HOLD button: pressed = onDown, released = onUp (multitouch-safe)
+  // ---- left-side dynamic joystick: drive the car with one thumb ----
+  // Touch anywhere on the left; the stick appears under your finger. Push
+  // up/down = accelerate/reverse, left/right = steer (fully analog).
+  const zone = document.getElementById('tcJoyZone');
+  const base = document.getElementById('tcJoyBase');
+  const thumb = document.getElementById('tcJoyThumb');
+  const R = 62, DEAD = 0.16;
+  let joyId = null;
+  const norm = (v) => { const a = Math.abs(v); return a < DEAD ? 0 : Math.sign(v) * (a - DEAD) / (1 - DEAD); };
+  function joyReset() { input.throttle = 0; input.brake = 0; input.steerAxis = null; input.left = false; input.right = false; }
+  function place(el, x, y) { el.style.left = x + 'px'; el.style.top = y + 'px'; }
+  function joyStart(e) {
+    if (joyId !== null || !gameStarted) return;
+    joyId = e.pointerId;
+    try { zone.setPointerCapture(joyId); } catch (_) {}
+    base._x = e.clientX; base._y = e.clientY;
+    place(base, base._x, base._y); place(thumb, base._x, base._y);
+    base.style.display = thumb.style.display = 'block';
+    joyMove(e);
+  }
+  function joyMove(e) {
+    if (e.pointerId !== joyId) return;
+    let dx = e.clientX - base._x, dy = e.clientY - base._y;
+    const len = Math.hypot(dx, dy);
+    if (len > R) { dx = dx / len * R; dy = dy / len * R; }
+    place(thumb, base._x + dx, base._y + dy);
+    const jx = norm(dx / R), jy = norm(-dy / R);   // up = forward
+    input.throttle = jy > 0 ? jy : 0;
+    input.brake    = jy < 0 ? -jy : 0;
+    input.steerAxis = -jx;                          // push left => steer left
+    input.left  = jx < -DEAD;                       // keep booleans for air/plane control
+    input.right = jx >  DEAD;
+  }
+  function joyEnd(e) {
+    if (e.pointerId !== joyId) return;
+    joyId = null; joyReset();
+    base.style.display = thumb.style.display = 'none';
+  }
+  zone.addEventListener('pointerdown', (e)=>{ e.preventDefault(); joyStart(e); });
+  zone.addEventListener('pointermove', joyMove);
+  zone.addEventListener('pointerup', joyEnd);
+  zone.addEventListener('pointercancel', joyEnd);
+
+  // ---- right-side action buttons (set input DIRECTLY so they never clobber
+  //      the joystick, which is what refreshInput() would do) ----
   const hold = (id, onDown, onUp) => {
-    const el = document.getElementById(id);
-    if (!el) return;
+    const el = document.getElementById(id); if (!el) return;
     let active = false;
-    const down = (e) => { e.preventDefault(); if (active) return; active = true; el.classList.add('pressed'); onDown && onDown(); };
-    const up   = (e) => { if (e) e.preventDefault(); if (!active) return; active = false; el.classList.remove('pressed'); onUp && onUp(); };
-    el.addEventListener('pointerdown', down);
-    el.addEventListener('pointerup', up);
-    el.addEventListener('pointercancel', up);
-    el.addEventListener('pointerleave', up);
+    el.addEventListener('pointerdown', (e)=>{ e.preventDefault(); if (active) return; active = true; el.classList.add('pressed'); onDown && onDown(); });
+    const up = (e)=>{ if (e) e.preventDefault(); if (!active) return; active = false; el.classList.remove('pressed'); onUp && onUp(); };
+    el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up); el.addEventListener('pointerleave', up);
   };
-  // bind a TAP button: fires once per press
   const tap = (id, fn) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('pointerdown', (e) => { e.preventDefault(); el.classList.add('pressed'); fn && fn(); });
-    const rel = () => el.classList.remove('pressed');
-    el.addEventListener('pointerup', rel);
-    el.addEventListener('pointercancel', rel);
-    el.addEventListener('pointerleave', rel);
+    const el = document.getElementById(id); if (!el) return;
+    el.addEventListener('pointerdown', (e)=>{ e.preventDefault(); el.classList.add('pressed'); fn && fn(); });
+    const rel = ()=> el.classList.remove('pressed');
+    el.addEventListener('pointerup', rel); el.addEventListener('pointercancel', rel); el.addEventListener('pointerleave', rel);
   };
 
-  // driving
-  hold('tcLeft',  ()=>{ keys['KeyA']=true;  refreshInput(); }, ()=>{ keys['KeyA']=false; refreshInput(); });
-  hold('tcRight', ()=>{ keys['KeyD']=true;  refreshInput(); }, ()=>{ keys['KeyD']=false; refreshInput(); });
-  hold('tcGas',   ()=>{ keys['KeyW']=true;  refreshInput(); }, ()=>{ keys['KeyW']=false; refreshInput(); });
-  hold('tcBrake', ()=>{ keys['KeyS']=true;  refreshInput(); }, ()=>{ keys['KeyS']=false; refreshInput(); });
-  hold('tcNitro', ()=>{ keys['ShiftLeft']=true; refreshInput(); }, ()=>{ keys['ShiftLeft']=false; refreshInput(); });
-  // space = handbrake (hold) + jump (on press), same as desktop
-  hold('tcJump',
-    ()=>{ keys['Space']=true; refreshInput(); if (gameStarted && !myLaunch) tryJump(); },
-    ()=>{ keys['Space']=false; refreshInput(); });
-  // actions
+  hold('tcNitro', ()=>{ input.nitro = true; }, ()=>{ input.nitro = false; });
+  hold('tcJump',  ()=>{ input.handbrake = true; if (gameStarted && !myLaunch) tryJump(); }, ()=>{ input.handbrake = false; });
+  hold('tcHorn',  ()=>{ if (gameStarted){ input.horn = true; playHorn(); } }, ()=>{ input.horn = false; });
   tap('tcFire',    ()=>{ if (gameStarted) fire(); });
-  tap('tcRespawn', ()=>{ if (gameStarted) respawn(); });
   tap('tcUse',     ()=>{ if (gameStarted) useSelectedItem(); });
-  hold('tcHorn',   ()=>{ if (gameStarted){ input.horn=true; playHorn(); } }, ()=>{ input.horn=false; });
+  tap('tcRespawn', ()=>{ if (gameStarted) respawn(); });
   tap('tcPause',   ()=>{ if (gameStarted){ if (garageOpen) closeGarage(); else togglePause(); } });
   tap('tcChat',    ()=>{ if (gameStarted) openChat(); });
 
-  // tapping an inventory slot uses that item directly on touch
+  // tap an inventory slot to use that item
   for (let i = 0; i < 3; i++) {
     const slot = document.getElementById('invSlot' + i);
     if (!slot) continue;
@@ -4497,6 +4539,7 @@ function refreshInput() {
   input.right    = !!(keys['KeyD']||keys['ArrowRight']);
   input.handbrake= !!keys['Space'];
   input.nitro    = !!(keys['ShiftLeft']||keys['ShiftRight']);
+  input.steerAxis= null;   // keyboard uses the digital left/right above
 }
 
 /* =====================================================================
@@ -4912,6 +4955,7 @@ function startOfflineGame() {
   // fresh random map each solo session
   const seed = (Math.random()*1e9)|0;
   buildWorld(seed);
+  precompileScene();
 
   // offline rockets: a few scattered around the map
   const dist = WORLD.half - 30;
@@ -5415,6 +5459,7 @@ function onGameStart(d) {
   }
   // rebuild the world from the server's seed so everyone shares the same map
   buildWorld(d && d.world ? d.world.seed : undefined);
+  precompileScene();
 
   // rocket positions come from the server (matches every client)
   if (d && Array.isArray(d.rockets) && d.rockets.length) buildAllRockets(d.rockets);
